@@ -17,3 +17,5 @@ config/*
 !config/auto_batch.example.yaml
 !config/server_only.example.yaml
 !config/specedge.example.yaml
+!config/specedge_4090_jetson.yaml
+!config/server_only_4090.yaml
