@@ -265,6 +265,11 @@ def _load_config(config_file: Path):
     os.environ["SPECEDGE_NUM_CLIENTS"] = str(num_clients)
     os.environ["SPECEDGE_SAMPLE_REQ_CNT"] = str(sample_req_cnt)
 
+    # server-side options
+    # `cache_prefill` may be missing in older or minimal config files; default to False
+    cache_prefill = config_yaml.get("server", {}).get("cache_prefill", False)
+    os.environ["SPECEDGE_CACHE_PREFILL"] = str(cache_prefill)
+
     os.environ["SPECEDGE_REQ_IDX"] = "0"
     os.environ["SPECEDGE_BATCH_TYPE"] = ""
     os.environ["SPECEDGE_REQ_OFFSET"] = "0"

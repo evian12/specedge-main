@@ -252,6 +252,12 @@ class BatchTree:
 
         prefix_len = prefix_tokens.numel()
 
+        if prefix_len > self._max_len:
+            raise ValueError(
+                f"Prompt length {prefix_len} exceeds tree capacity {self._max_len} "
+                f"for batch {batch_idx}. Increase base.max_len or truncate the prompt."
+            )
+
         # moved from remove_requests function
         self._data[batch_idx].zero_()
         self.prefix_len[batch_idx].zero_()
@@ -314,6 +320,22 @@ class BatchTree:
             batch_indices.shape[-1], device=self._device, dtype=torch.long
         )
         unique_batches, cnts = torch.unique(batch_indices, return_counts=True)
+
+        remaining = self._max_len - self.end[unique_batches]
+        if torch.any(cnts > remaining):
+            overflow_pos = torch.where(cnts > remaining)[0][0]
+            b_idx = unique_batches[overflow_pos]
+            raise ValueError(
+                "BatchTree capacity exceeded before adding draft nodes: "
+                f"batch={int(b_idx.item())}, "
+                f"prefix_len={int(self.prefix_len[b_idx].item())}, "
+                f"end={int(self.end[b_idx].item())}, "
+                f"trying_to_add={int(cnts[overflow_pos].item())}, "
+                f"remaining={int(remaining[overflow_pos].item())}, "
+                f"max_len={self._max_len}. "
+                "Increase base.max_len or reduce client.max_budget, "
+                "client.max_beam_len, or client.max_branch_width."
+            )
 
         for b_idx in unique_batches:
             positions = (batch_indices == b_idx).nonzero(as_tuple=True)[0]

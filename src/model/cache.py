@@ -124,14 +124,12 @@ class KVCache:
         prev_v_cache = self.v_cache
 
         self.seq_indices = torch.arange(n_beams, device=self.device)
-        self.k_cache = prev_k_cache.select(1, batch_idx).clone().unsqueeze(1)
-        self.v_cache = prev_v_cache.select(1, batch_idx).clone().unsqueeze(1)
+        self.k_cache = prev_k_cache[:, batch_idx : batch_idx + 1]
+        self.v_cache = prev_v_cache[:, batch_idx : batch_idx + 1]
 
-        yield
-
-        prev_k_cache[:, batch_idx : batch_idx + 1] = self.k_cache
-        prev_v_cache[:, batch_idx : batch_idx + 1] = self.v_cache
-
-        self.seq_indices = prev_seq_indices
-        self.k_cache = prev_k_cache
-        self.v_cache = prev_v_cache
+        try:
+            yield
+        finally:
+            self.seq_indices = prev_seq_indices
+            self.k_cache = prev_k_cache
+            self.v_cache = prev_v_cache

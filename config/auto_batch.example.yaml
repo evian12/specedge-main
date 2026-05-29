@@ -2,8 +2,8 @@ base:
   result_path: result/demo
   exp_name: "auto_batch"
   seed: 42
-  model: Qwen/Qwen3-14B
-  device: cuda:0
+  model: /home/yypan/models/Llama-2-7B
+  device: cuda:1
   dtype: fp16
   temperature: 0.0
   dataset: specbench

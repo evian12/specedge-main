@@ -7,8 +7,14 @@ import polars as pl
 from rich.console import Console
 from rich.table import Table
 
-from metric import A100_80_GPU_COST, A100_GPU_COST
+from metric import A100_80_GPU_COST, A100_GPU_COST, RTX4090_GPU_COST
 
+
+GPU_COSTS = {
+    "A100_80": A100_80_GPU_COST,
+    "A100_40": A100_GPU_COST,
+    "RTX4090": RTX4090_GPU_COST,
+}
 
 def main(data_folder_path: Path):
     # Find all client files and the server file
@@ -354,17 +360,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-d", "--data", help="Path to the data file")
     parser.add_argument("--plain", action="store_true", help="Use plain text data")
-    parser.add_argument("--gpu", default="A100_80", type=str, choices=["A100_80", "A100_40"])
+    parser.add_argument("--gpu", default="A100_80", type=str, choices=GPU_COSTS.keys())
     args = parser.parse_args()
     
-    if args.gpu == "A100_80":
-        print("Using A100_80 GPU")
-        GPU_COST = A100_80_GPU_COST
-    elif args.gpu == "A100_40":
-        print("Using A100_40 GPU")
-        GPU_COST = A100_GPU_COST
-    else:
-        raise ValueError("Invalid GPU option")
+    print(f"Using {args.gpu} GPU")
+    GPU_COST = GPU_COSTS[args.gpu]
 
     data_folder_path = Path(args.data)
 
