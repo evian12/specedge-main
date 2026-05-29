@@ -22,6 +22,9 @@ fi
 
 source .venv/bin/activate || { echo "Failed to activate virtual environment"; exit 1; }
 
+# ensure src is on PYTHONPATH so modules like `log` are importable
+export PYTHONPATH="$PWD/src:${PYTHONPATH}"
+
 config_file="config.yaml"
 while getopts "f:rh" opt; do
     case "$opt" in
@@ -45,6 +48,7 @@ while getopts "f:rh" opt; do
     esac
 done
 shift $((OPTIND-1))
+
 
 # run the application
 python src/script/client_host.py --config "$config_file"

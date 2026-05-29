@@ -131,10 +131,10 @@ def warn_not_commit():
             check=True,
         )
         if result.stdout.strip():
-            print(
-                "Warning: There are uncommitted changes \n\n"
-                f"{result.stdout.replace('\n', '\n  ')}"
-            )
+            # Avoid using backslashes inside f-string expressions (syntax error
+            # on older Python versions). Pre-format the stdout string first.
+            indented_stdout = result.stdout.replace("\n", "\n  ")
+            print("Warning: There are uncommitted changes\n\n" + indented_stdout)
             proceed = input("Do you want to proceed? (y/N): ")
             if proceed.lower() != "y":
                 print("Experiment aborted.")

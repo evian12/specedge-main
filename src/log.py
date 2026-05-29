@@ -5,7 +5,18 @@ import logging.config
 import logging.handlers
 import weakref
 from pathlib import Path
-from typing import ClassVar, Optional, Self
+from typing import ClassVar, Optional
+
+# `Self` was added to `typing` in newer Python versions. Try importing
+# from `typing` first, fall back to `typing_extensions`, and finally
+# to `Any` to remain compatible with older Python runtimes.
+try:
+    from typing import Self  # type: ignore
+except Exception:  # pragma: no cover - runtime compatibility fallback
+    try:
+        from typing_extensions import Self  # type: ignore
+    except Exception:  # pragma: no cover - final fallback
+        from typing import Any as Self  # type: ignore
 
 RESULT_DATA_PREFIX = "_data"
 

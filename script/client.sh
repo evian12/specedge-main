@@ -10,6 +10,9 @@ fi
 
 source .venv/bin/activate || { echo "Failed to activate virtual environment"; exit 1; }
 
+# ensure src is on PYTHONPATH so modules like `log` are importable
+export PYTHONPATH="$PWD/src:${PYTHONPATH}"
+
 if [ -n "$SPECEDGE_OPTIMIZATION" ] && [ "$SPECEDGE_OPTIMIZATION" -ge 1 ]; then
    python -O src/script/client.py
 else 
