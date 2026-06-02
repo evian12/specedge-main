@@ -122,7 +122,17 @@ def main(config_file: str):
 
             logger.debug("cmd: %s", cmd)
             process = subprocess.Popen(  # noqa: S603
-                ["ssh", "-i", ssh_key, node_name, cmd],  # noqa: S607
+                [
+                    "ssh",
+                    "-i",
+                    ssh_key,
+                    "-o",
+                    "ExitOnForwardFailure=yes",
+                    "-R",
+                    "18001:127.0.0.1:8001",
+                    node_name,
+                    cmd,
+                ],  # noqa: S607
                 stdout=subprocess.PIPE,
                 stderr=sys.stderr.buffer,
                 text=True,

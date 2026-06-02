@@ -30,7 +30,7 @@ async def serve():
 
     server = grpc.aio.server()
     specedge_pb2_grpc.add_SpecEdgeServiceServicer_to_server(controller, server)
-    server.add_insecure_port("[::]:8001")
+    server.add_insecure_port("0.0.0.0:8001")
 
     try:
         await server.start()

@@ -11,8 +11,8 @@ base:
 
 server:
   process_name: server
-  target_model: /home/yypan/models/Llama-2-7B
-  device: cuda:1
+  target_model: /home/yypan/models/TinyLlama-1.1B
+  device: cuda:3
   temperature: 0.7
   max_batch_size: 1
   num_clients: 1
@@ -20,7 +20,7 @@ server:
   cache_prefill: true
 
 client:
-  host: 10.201.135.214:8001
+  host: 127.0.0.1:18001
   process_name: client
   draft_model: /home/yypan/models/TinyLlama-1.1B
   dataset: specbench

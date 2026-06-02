@@ -3,6 +3,7 @@ import json
 import logging
 import logging.config
 import logging.handlers
+import sys
 import weakref
 from pathlib import Path
 from typing import ClassVar, Optional
@@ -69,6 +70,49 @@ def get_default_log_config(log_dir: Path, file_name: str):
     log_file_path = log_dir / f"{file_name}.log"
     result_file_path = log_dir / f"{file_name}.jsonl"
 
+    handlers = {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "simple",
+            "level": "INFO",
+            "stream": "ext://sys.stderr",
+        },
+        "file": {
+            "()": f"{__name__}.FileHandler",
+            "file_path": log_file_path,
+            "formatter": "iso",
+            "level": "DEBUG",
+        },
+        "result": {
+            "()": f"{__name__}.ResultHandler",
+            "file_path": result_file_path,
+        },
+    }
+
+    if sys.version_info >= (3, 12):
+        handlers.update(
+            {
+                "queue_handler": {
+                    "class": "logging.handlers.QueueHandler",
+                    "handlers": ["console", "file"],
+                    "listener": f"{__name__}.QueueListener",
+                    "queue": {"()": "multiprocessing.Queue", "maxsize": -1},
+                    "respect_handler_level": True,
+                },
+                "result_queue_handler": {
+                    "class": "logging.handlers.QueueHandler",
+                    "handlers": ["result"],
+                    "listener": f"{__name__}.QueueListener",
+                    "queue": {"()": "multiprocessing.Queue", "maxsize": -1},
+                },
+            }
+        )
+        root_handlers = ["queue_handler"]
+        result_handlers = ["result_queue_handler"]
+    else:
+        root_handlers = ["console", "file"]
+        result_handlers = ["result"]
+
     return {
         "version": 1,
         "formatters": {
@@ -78,44 +122,14 @@ def get_default_log_config(log_dir: Path, file_name: str):
                 "format": "%(asctime)s.%(msecs)03d %(levelname)-8s %(message)s",
             },
         },
-        "handlers": {
-            "console": {
-                "class": "logging.StreamHandler",
-                "formatter": "simple",
-                "level": "INFO",
-                "stream": "ext://sys.stderr",
-            },
-            "file": {
-                "()": f"{__name__}.FileHandler",
-                "file_path": log_file_path,
-                "formatter": "iso",
-                "level": "DEBUG",
-            },
-            "queue_handler": {
-                "class": "logging.handlers.QueueHandler",
-                "handlers": ["console", "file"],
-                "listener": f"{__name__}.QueueListener",
-                "queue": {"()": "multiprocessing.Queue", "maxsize": -1},
-                "respect_handler_level": True,
-            },
-            "result": {
-                "()": f"{__name__}.ResultHandler",
-                "file_path": result_file_path,
-            },
-            "result_queue_handler": {
-                "class": "logging.handlers.QueueHandler",
-                "handlers": ["result"],
-                "listener": f"{__name__}.QueueListener",
-                "queue": {"()": "multiprocessing.Queue", "maxsize": -1},
-            },
-        },
+        "handlers": handlers,
         "loggers": {
             "custom_log_result": {
-                "handlers": ["result_queue_handler"],
+                "handlers": result_handlers,
                 "level": "INFO",
                 "propagate": False,
             },
-            "root": {"handlers": ["queue_handler"], "level": "DEBUG"},
+            "root": {"handlers": root_handlers, "level": "DEBUG"},
         },
     }
 

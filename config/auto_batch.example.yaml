@@ -3,7 +3,7 @@ base:
   exp_name: "auto_batch"
   seed: 42
   model: /home/yypan/models/Llama-2-7b-chat-hf
-  device: cuda:1
+  device: cuda:3
   dtype: fp16
   temperature: 0.0
   dataset: specbench
