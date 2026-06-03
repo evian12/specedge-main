@@ -92,7 +92,7 @@ class SpecExecBatchServer(specedge_pb2_grpc.SpecEdgeServiceServicer):
             self._resp_futures[request.client_idx] = fut
 
         self._recv_queue.put(request.SerializeToString())
-        selection, prefill_cnt = await asyncio.wait_for(fut, timeout=5.0)
+        selection, prefill_cnt = await asyncio.wait_for(fut, timeout=120.0)
         return specedge_pb2.ValidateResponse(selection=selection, prefill=prefill_cnt)
 
     def _init_inference_loop(self):

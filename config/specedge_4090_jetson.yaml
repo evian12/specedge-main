@@ -11,7 +11,7 @@ base:
 
 server:
   process_name: server
-  target_model: /home/yypan/models/TinyLlama-1.1B
+  target_model: /home/yypan/models/Llama-2-7b-chat-hf
   device: cuda:3
   temperature: 0.7
   max_batch_size: 1
@@ -30,7 +30,7 @@ client:
   max_n_beams: 32
   max_beam_len: 4
   max_branch_width: 16
-  max_budget: 64
+  max_budget: 32
   proactive:
     type: excluded
     max_n_beams: 32

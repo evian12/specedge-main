@@ -270,7 +270,11 @@ def sampler_from_logits(
         if temperature != 1:
             scores = logits / temperature  # Apply temperature scaling
         else:
-            scores = logits  # Potentially modifies logits if masked_fill_ is used later
+            scores = logits.clone()  # Potentially modifies logits if masked_fill_ is used later
+        
+        scores = torch.nan_to_num(
+            scores, nan=0.0, posinf=torch.finfo(scores.dtype).max, neginf=-torch.inf
+        )
 
         if top_p != 1.0:
             # Sort scores in descending order for top-p sampling
@@ -293,7 +297,12 @@ def sampler_from_logits(
 
         # Sampling from the filtered logits
         probs = torch.softmax(scores, dim=-1)  # probs shape: [B, T, V]
-
+        probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+        invalid_rows = probs.sum(dim=-1, keepdim=True) <= 0
+        if invalid_rows.any():
+            probs = torch.where(invalid_rows, torch.ones_like(probs), probs)
+        probs = probs / probs.sum(dim=-1, keepdim=True)
+        
         # Original logits shape prefix (B, T) and vocab size V
         logits_prefix_shape = logits.shape[:-1]
         vocab_size = logits.shape[-1]
