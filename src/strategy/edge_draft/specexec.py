@@ -159,17 +159,14 @@ class SpecExecEdgeDraft:
 
             self._logger.debug("Prefilling batch %d", b_idx)
 
-            input_ids = self._tree.tokens[b_idx, : self._tree.prefix_len[b_idx]][
-                None, :
-            ]
-            position_ids = self._tree.positions[b_idx, : self._tree.prefix_len[b_idx]][
-                None, :
-            ]
-            cache_seq_indices = self._tree.positions[
-                b_idx, : self._tree.prefix_len[b_idx]
-            ]
+            # The final prompt token is the root candidate and is forwarded
+            # during tree growth, so prefill only the tokens before it.
+            prefill_len = int(self._tree.prefix_len[b_idx].item()) - 1
+            input_ids = self._tree.tokens[b_idx, :prefill_len][None, :]
+            position_ids = self._tree.positions[b_idx, :prefill_len][None, :]
+            cache_seq_indices = self._tree.positions[b_idx, :prefill_len]
             attention_mask = self._tree.amask[
-                b_idx, :, : self._tree.prefix_len[b_idx], :
+                b_idx, :, :prefill_len, :
             ].unsqueeze(0)
 
             self._engine.prefill(

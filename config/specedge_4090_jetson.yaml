@@ -12,8 +12,8 @@ base:
 server:
   process_name: server
   target_model: /home/yypan/models/Llama-2-7b-chat-hf
-  device: cuda:3
-  temperature: 0.7
+  device: cuda:0
+  temperature: 0.3
   max_batch_size: 1
   num_clients: 1
   batch_type: static

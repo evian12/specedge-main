@@ -274,7 +274,7 @@ class SpecExecEdgeVerify:
     def _remove_request(self, eos_flag: torch.Tensor):
         max_token_reached = (
             self._tree.prefix_len - self._req_manager.initial_prefix_len
-        ) > self._max_new_tokens
+        ) >= self._max_new_tokens
         empty_req_flag = self._req_manager.initial_prefix_len != 0
         remove_flag = (max_token_reached | eos_flag) & empty_req_flag
 

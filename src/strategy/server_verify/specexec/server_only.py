@@ -55,7 +55,9 @@ class SpecExecServerVerify:
             self._device
         )
 
-        input_ids = prefix_tokens
+        # Keep the final prompt token out of the cache because it is included
+        # as the root input in the following verification forward pass.
+        input_ids = prefix_tokens[..., :-1]
         position_ids = torch.arange(input_ids.size(-1), device=self._device).unsqueeze(
             0
         )

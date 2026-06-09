@@ -1,0 +1,430 @@
+{
+  "request_index": 0,
+  "draft_model": "/home/yypan/models/TinyLlama-1.1B",
+  "target_model": "/home/yypan/models/Llama-2-7b-chat-hf",
+  "draft": {
+    "prompt_tokens": 44,
+    "max_abs_logit_error": 0.01953125,
+    "mean_abs_logit_error": 0.003726858412846923,
+    "reference_top_tokens": [
+      {
+        "id": 28862,
+        "logit": 14.6796875,
+        "text": "Wel"
+      },
+      {
+        "id": 5323,
+        "logit": 12.8515625,
+        "text": "Tra"
+      },
+      {
+        "id": 3421,
+        "logit": 12.7734375,
+        "text": "My"
+      },
+      {
+        "id": 4591,
+        "logit": 12.6640625,
+        "text": "From"
+      },
+      {
+        "id": 29909,
+        "logit": 12.4765625,
+        "text": "A"
+      },
+      {
+        "id": 2887,
+        "logit": 12.4296875,
+        "text": "As"
+      },
+      {
+        "id": 2928,
+        "logit": 12.3203125,
+        "text": "Int"
+      },
+      {
+        "id": 29956,
+        "logit": 12.2265625,
+        "text": "W"
+      },
+      {
+        "id": 29950,
+        "logit": 12.2265625,
+        "text": "H"
+      },
+      {
+        "id": 29902,
+        "logit": 12.1015625,
+        "text": "I"
+      },
+      {
+        "id": 29967,
+        "logit": 12.0625,
+        "text": "J"
+      },
+      {
+        "id": 6816,
+        "logit": 12.0,
+        "text": "Me"
+      },
+      {
+        "id": 797,
+        "logit": 11.8828125,
+        "text": "In"
+      },
+      {
+        "id": 28181,
+        "logit": 11.875,
+        "text": "Ready"
+      },
+      {
+        "id": 1576,
+        "logit": 11.7421875,
+        "text": "The"
+      },
+      {
+        "id": 10994,
+        "logit": 11.53125,
+        "text": "Hello"
+      }
+    ],
+    "custom_top_tokens": [
+      {
+        "id": 28862,
+        "logit": 14.6796875,
+        "text": "Wel"
+      },
+      {
+        "id": 5323,
+        "logit": 12.8515625,
+        "text": "Tra"
+      },
+      {
+        "id": 3421,
+        "logit": 12.78125,
+        "text": "My"
+      },
+      {
+        "id": 4591,
+        "logit": 12.6640625,
+        "text": "From"
+      },
+      {
+        "id": 29909,
+        "logit": 12.4765625,
+        "text": "A"
+      },
+      {
+        "id": 2887,
+        "logit": 12.4375,
+        "text": "As"
+      },
+      {
+        "id": 2928,
+        "logit": 12.3203125,
+        "text": "Int"
+      },
+      {
+        "id": 29956,
+        "logit": 12.2265625,
+        "text": "W"
+      },
+      {
+        "id": 29950,
+        "logit": 12.2265625,
+        "text": "H"
+      },
+      {
+        "id": 29902,
+        "logit": 12.09375,
+        "text": "I"
+      },
+      {
+        "id": 29967,
+        "logit": 12.0625,
+        "text": "J"
+      },
+      {
+        "id": 6816,
+        "logit": 12.0,
+        "text": "Me"
+      },
+      {
+        "id": 28181,
+        "logit": 11.8828125,
+        "text": "Ready"
+      },
+      {
+        "id": 797,
+        "logit": 11.8828125,
+        "text": "In"
+      },
+      {
+        "id": 1576,
+        "logit": 11.734375,
+        "text": "The"
+      },
+      {
+        "id": 10994,
+        "logit": 11.53125,
+        "text": "Hello"
+      }
+    ],
+    "graph_max_abs_logit_error": 0.01953125,
+    "graph_mean_abs_logit_error": 0.0034211017191410065,
+    "graph_top_tokens": [
+      {
+        "id": 28862,
+        "logit": 14.6875,
+        "text": "Wel"
+      },
+      {
+        "id": 5323,
+        "logit": 12.8515625,
+        "text": "Tra"
+      },
+      {
+        "id": 3421,
+        "logit": 12.7734375,
+        "text": "My"
+      },
+      {
+        "id": 4591,
+        "logit": 12.65625,
+        "text": "From"
+      },
+      {
+        "id": 29909,
+        "logit": 12.46875,
+        "text": "A"
+      },
+      {
+        "id": 2887,
+        "logit": 12.4375,
+        "text": "As"
+      },
+      {
+        "id": 2928,
+        "logit": 12.328125,
+        "text": "Int"
+      },
+      {
+        "id": 29950,
+        "logit": 12.2265625,
+        "text": "H"
+      },
+      {
+        "id": 29956,
+        "logit": 12.21875,
+        "text": "W"
+      },
+      {
+        "id": 29902,
+        "logit": 12.1015625,
+        "text": "I"
+      },
+      {
+        "id": 29967,
+        "logit": 12.0546875,
+        "text": "J"
+      },
+      {
+        "id": 6816,
+        "logit": 11.9921875,
+        "text": "Me"
+      },
+      {
+        "id": 797,
+        "logit": 11.8828125,
+        "text": "In"
+      },
+      {
+        "id": 28181,
+        "logit": 11.875,
+        "text": "Ready"
+      },
+      {
+        "id": 1576,
+        "logit": 11.7421875,
+        "text": "The"
+      },
+      {
+        "id": 10994,
+        "logit": 11.53125,
+        "text": "Hello"
+      }
+    ]
+  },
+  "target": {
+    "prompt_tokens": 44,
+    "max_abs_logit_error": NaN,
+    "mean_abs_logit_error": NaN,
+    "reference_top_tokens": [
+      {
+        "id": 8,
+        "logit": NaN,
+        "text": "\u0005"
+      },
+      {
+        "id": 10,
+        "logit": NaN,
+        "text": "\u0007"
+      },
+      {
+        "id": 4,
+        "logit": NaN,
+        "text": "\u0001"
+      },
+      {
+        "id": 15,
+        "logit": NaN,
+        "text": "\f"
+      },
+      {
+        "id": 12,
+        "logit": NaN,
+        "text": "\t"
+      },
+      {
+        "id": 3,
+        "logit": NaN,
+        "text": "\u0000"
+      },
+      {
+        "id": 9,
+        "logit": NaN,
+        "text": "\u0006"
+      },
+      {
+        "id": 1,
+        "logit": NaN,
+        "text": "<s>"
+      },
+      {
+        "id": 11,
+        "logit": NaN,
+        "text": "\b"
+      },
+      {
+        "id": 5,
+        "logit": NaN,
+        "text": "\u0002"
+      },
+      {
+        "id": 7,
+        "logit": NaN,
+        "text": "\u0004"
+      },
+      {
+        "id": 13,
+        "logit": NaN,
+        "text": "\n"
+      },
+      {
+        "id": 0,
+        "logit": NaN,
+        "text": "<unk>"
+      },
+      {
+        "id": 2,
+        "logit": NaN,
+        "text": "</s>"
+      },
+      {
+        "id": 6,
+        "logit": NaN,
+        "text": "\u0003"
+      },
+      {
+        "id": 14,
+        "logit": NaN,
+        "text": "\u000b"
+      }
+    ],
+    "custom_top_tokens": [
+      {
+        "id": 8,
+        "logit": NaN,
+        "text": "\u0005"
+      },
+      {
+        "id": 10,
+        "logit": NaN,
+        "text": "\u0007"
+      },
+      {
+        "id": 4,
+        "logit": NaN,
+        "text": "\u0001"
+      },
+      {
+        "id": 15,
+        "logit": NaN,
+        "text": "\f"
+      },
+      {
+        "id": 12,
+        "logit": NaN,
+        "text": "\t"
+      },
+      {
+        "id": 3,
+        "logit": NaN,
+        "text": "\u0000"
+      },
+      {
+        "id": 9,
+        "logit": NaN,
+        "text": "\u0006"
+      },
+      {
+        "id": 1,
+        "logit": NaN,
+        "text": "<s>"
+      },
+      {
+        "id": 11,
+        "logit": NaN,
+        "text": "\b"
+      },
+      {
+        "id": 5,
+        "logit": NaN,
+        "text": "\u0002"
+      },
+      {
+        "id": 7,
+        "logit": NaN,
+        "text": "\u0004"
+      },
+      {
+        "id": 13,
+        "logit": NaN,
+        "text": "\n"
+      },
+      {
+        "id": 0,
+        "logit": NaN,
+        "text": "<unk>"
+      },
+      {
+        "id": 2,
+        "logit": NaN,
+        "text": "</s>"
+      },
+      {
+        "id": 6,
+        "logit": NaN,
+        "text": "\u0003"
+      },
+      {
+        "id": 14,
+        "logit": NaN,
+        "text": "\u000b"
+      }
+    ]
+  },
+  "reference_root_candidate_probability": NaN,
+  "custom_root_candidate_probability": NaN,
+  "graph_root_candidate_probability": NaN
+}

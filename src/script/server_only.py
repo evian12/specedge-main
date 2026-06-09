@@ -55,6 +55,12 @@ async def main():
 
     logger.info("Initializing tokenizer...")
     _tokenizer = util.load_tokenizer(client_config.draft_model)
+    target_tokenizer = util.load_tokenizer(server_config.target_model)
+    _validate_tokenizer_compatibility(
+        _tokenizer,
+        target_tokenizer,
+        dataset[: min(8, len(dataset))],
+    )
 
     logger.info("Initializing request manager...")
     req_manager = RequestManager(
@@ -152,6 +158,7 @@ async def main():
                     prefill_requests=prefill_requests,
                 )
 
+                active_req_statuses = list(req_manager.req_statuses)
                 n_fresh_tokens = await edge_verify.edge_post_verify(
                     selection=selection,
                     batch_indices=batch_indices,
@@ -160,7 +167,7 @@ async def main():
                 )
 
             n_fresh_tokens = n_fresh_tokens.cpu().numpy()
-            for batch_idx, req_status in enumerate(req_manager.req_statuses):
+            for batch_idx, req_status in enumerate(active_req_statuses):
                 if not req_status:
                     continue
 
@@ -182,6 +189,18 @@ async def main():
                 )
 
             iter_idx += 1
+
+
+def _validate_tokenizer_compatibility(draft_tokenizer, target_tokenizer, prompts):
+    for prompt_idx, prompt in enumerate(prompts):
+        draft_ids = draft_tokenizer.encode(prompt)
+        target_ids = target_tokenizer.encode(prompt)
+        if draft_ids != target_ids:
+            raise ValueError(
+                "Draft and target tokenizers produce different token IDs for "
+                f"prompt {prompt_idx}. Speculative decoding requires compatible "
+                "tokenizers; use models from the same tokenizer family."
+            )
 
 
 def _load_config(config_file: Path):

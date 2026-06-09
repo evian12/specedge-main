@@ -36,7 +36,7 @@ def convert_dtype(dtype: str) -> torch.dtype:
 
 def load_model(name: str, device: torch.device, dtype: torch.dtype):
     model = AutoModelForCausalLM.from_pretrained(
-        name, torch_dtype=dtype, device_map=device
+        name, dtype=dtype, device_map=device
     )
     model.eval()
     return model
@@ -45,11 +45,11 @@ def load_model(name: str, device: torch.device, dtype: torch.dtype):
 def load_graph_model(name: str, device: torch.device, dtype: torch.dtype):
     if "llama" in name.lower() or "vicuna" in name.lower():
         model = LlamaForCausalLM.from_pretrained(
-            name, torch_dtype=dtype, device_map=device
+            name, dtype=dtype, device_map=device
         )
     elif "qwen3" in name.lower():
         model = Qwen3ForCausalLM.from_pretrained(
-            name, torch_dtype=dtype, device_map=device
+            name, dtype=dtype, device_map=device
         )
     else:
         raise ValueError(
@@ -266,6 +266,13 @@ def sampler_from_logits(
         min_tokens_to_keep (int): Minimum tokens to keep regardless of top_p.
     Returns: Tuple[torch.Tensor, torch.Tensor]: Indices and logprobs of selected tokens.
     """
+    if not torch.isfinite(logits).all():
+        non_finite = int((~torch.isfinite(logits)).sum().item())
+        raise FloatingPointError(
+            f"Model produced {non_finite} non-finite logits. "
+            "Check model weights, dtype, and attention implementation."
+        )
+
     if temperature > 0:
         if temperature != 1:
             scores = logits / temperature  # Apply temperature scaling
@@ -282,12 +289,15 @@ def sampler_from_logits(
             sorted_logits, sorted_indices = torch.sort(scores, descending=True, dim=-1)
             cumulative_probs = torch.softmax(sorted_logits, dim=-1).cumsum(dim=-1)
 
-            # Create a mask to remove logits not in the top-p
-            sorted_indices_to_remove = cumulative_probs <= (1 - top_p)
-            # Keep at least min_tokens_to_keep tokens
-            # (from the tail of sorted, i.e., lowest probability)
-            sorted_indices_to_remove[..., -min_tokens_to_keep:] = False
-
+            # Remove tokens after the smallest high-probability prefix whose
+            # cumulative probability reaches top_p. Shift the mask so the token
+            # that crosses the threshold is retained.
+            sorted_indices_to_remove = cumulative_probs > top_p
+            sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[
+                ..., :-1
+            ].clone()
+            sorted_indices_to_remove[..., :min_tokens_to_keep] = False
+            
             # Scatter the indices to the original order and mask the logits
             # For scores [B, T, V], scatter along V (dim=-1)
             indices_to_remove = sorted_indices_to_remove.scatter(
