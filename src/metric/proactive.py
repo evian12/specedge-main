@@ -39,6 +39,14 @@ def summarize(data_dir: Path) -> dict[str, Any]:
         if detail.get("mode") is not None
     }
     mode = ",".join(sorted(modes)) if modes else "legacy"
+    path_policies = {
+        detail.get("path_policy")
+        for detail in details
+        if detail.get("path_policy") is not None
+    }
+    path_policy = (
+        ",".join(sorted(path_policies)) if path_policies else "single_best"
+    )
 
     cycle_ms = [
         record["draft"]["end_to_end"] + record["target"]["end_to_end"]
@@ -63,6 +71,7 @@ def summarize(data_dir: Path) -> dict[str, Any]:
     return {
         "experiment": str(data_dir),
         "mode": mode,
+        "path_policy": path_policy,
         "cycles": len(records),
         "tokens_per_second": accepted_tokens * 1000 / sum(cycle_ms),
         "cycle_ms": _mean(cycle_ms),
@@ -81,6 +90,55 @@ def summarize(data_dir: Path) -> dict[str, Any]:
                 float(detail["executed_depth"])
                 for detail in details
                 if detail.get("executed_depth") is not None
+            ]
+        ),
+        "deepest_leaf_count": _mean(
+            [
+                float(detail["deepest_leaf_count"])
+                for detail in details
+                if detail.get("deepest_leaf_count") is not None
+            ]
+        ),
+        "selected_leaf_count": _mean(
+            [
+                float(detail["selected_leaf_count"])
+                for detail in details
+                if detail.get("selected_leaf_count") is not None
+            ]
+        ),
+        "root_count": _mean(
+            [
+                float(detail["root_count"])
+                for detail in details
+                if detail.get("root_count") is not None
+            ]
+        ),
+        "proactive_node_count": _mean(
+            [
+                float(detail["proactive_node_count"])
+                for detail in details
+                if detail.get("proactive_node_count") is not None
+            ]
+        ),
+        "wasted_node_count": _mean(
+            [
+                float(detail["wasted_node_count"])
+                for detail in details
+                if detail.get("wasted_node_count") is not None
+            ]
+        ),
+        "layer_batch_width": _mean(
+            [
+                float(width)
+                for detail in details
+                for width in detail.get("layer_batch_widths", [])
+            ]
+        ),
+        "full_depth_rate": _mean(
+            [
+                float(detail["observed_full_depth"])
+                for detail in details
+                if detail.get("observed_full_depth") is not None
             ]
         ),
         "response_received_ms": _mean(
@@ -142,6 +200,7 @@ def main() -> None:
     headers = [
         "experiment",
         "mode",
+        "path",
         "cycles",
         "tok/s",
         "cycle ms",
@@ -152,6 +211,13 @@ def main() -> None:
         "layer wall",
         "layer gpu",
         "depth",
+        "leaves",
+        "selected",
+        "roots",
+        "nodes",
+        "waste",
+        "batch",
+        "full %",
         "align %",
         "interrupt %",
         "skip %",
@@ -164,6 +230,7 @@ def main() -> None:
             [
                 summary["experiment"],
                 summary["mode"],
+                summary["path_policy"],
                 str(summary["cycles"]),
                 _format(summary["tokens_per_second"]),
                 _format(summary["cycle_ms"]),
@@ -174,6 +241,18 @@ def main() -> None:
                 _format(summary["layer_wall_ms"]),
                 _format(summary["layer_gpu_ms"]),
                 _format(summary["executed_depth"]),
+                _format(summary["deepest_leaf_count"]),
+                _format(summary["selected_leaf_count"]),
+                _format(summary["root_count"]),
+                _format(summary["proactive_node_count"]),
+                _format(summary["wasted_node_count"]),
+                _format(summary["layer_batch_width"]),
+                _format(
+                    summary["full_depth_rate"] * 100
+                    if summary["full_depth_rate"] is not None
+                    else None,
+                    1,
+                ),
                 _format(summary["alignment_rate"] * 100, 1),
                 _format(summary["interrupted_rate"] * 100, 1),
                 _format(summary["skip_rate"] * 100, 1),

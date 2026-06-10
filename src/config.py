@@ -1,3 +1,4 @@
+import json
 import os
 
 import torch
@@ -125,6 +126,58 @@ class SpecEdgeClientConfig(metaclass=_ConfigMeta):
         cls.proactive_mode = cls._from_env_default(
             "SPECEDGE_PROACTIVE_MODE", "baseline"
         )
+        cls.proactive_path_policy = cls._from_env_default(
+            "SPECEDGE_PROACTIVE_PATH_POLICY", "single_best"
+        )
+        cls.proactive_multi_max_deepest_leaves = int(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_MAX_DEEPEST_LEAVES", "8"
+            )
+        )
+        cls.proactive_multi_min_bonus_per_leaf = int(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_MIN_BONUS_PER_LEAF", "1"
+            )
+        )
+        cls.proactive_multi_max_bonus_per_leaf = int(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_MAX_BONUS_PER_LEAF", "4"
+            )
+        )
+        cls.proactive_multi_max_roots = int(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_MAX_ROOTS", "8"
+            )
+        )
+        cls.proactive_multi_min_root_probability = float(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_MIN_ROOT_PROBABILITY", "0.01"
+            )
+        )
+        cls.proactive_multi_leaf_temperature = float(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_LEAF_TEMPERATURE", "1.0"
+            )
+        )
+        cls.proactive_multi_full_depth_prior = float(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_FULL_DEPTH_PRIOR", "0.5"
+            )
+        )
+        cls.proactive_multi_acceptance_ewma_alpha = float(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_ACCEPTANCE_EWMA_ALPHA", "0.1"
+            )
+        )
+        cls.proactive_multi_depth_probability_coverage = [
+            float(value)
+            for value in json.loads(
+                cls._from_env_default(
+                    "SPECEDGE_PROACTIVE_MULTI_DEPTH_PROBABILITY_COVERAGE",
+                    "[1.0, 0.8, 0.5]",
+                )
+            )
+        ]
         cls.proactive_adaptive_ewma_alpha = float(
             cls._from_env_default("SPECEDGE_PROACTIVE_ADAPTIVE_EWMA_ALPHA", "0.2")
         )

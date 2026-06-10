@@ -19,6 +19,7 @@ from specedge.tree import Tree
 
 class SpecExecClient:
     _shared_adaptive_policy: Optional[AdaptiveProactivePolicy] = None
+    _shared_full_depth_acceptance: Optional[float] = None
 
     def __init__(
         self,
@@ -49,6 +50,7 @@ class SpecExecClient:
 
         self._proactive_type = config.proactive_type
         self._proactive_mode = config.proactive_mode
+        self._proactive_path_policy = config.proactive_path_policy
 
         self._max_new_tokens = config.max_new_tokens
         self._client_idx = config.client_idx
@@ -84,6 +86,13 @@ class SpecExecClient:
                 engine=self._engine,
                 max_len=self._max_len,
             )
+        if (
+            self._proactive_path_policy == "deepest_multi"
+            and SpecExecClient._shared_full_depth_acceptance is None
+        ):
+            SpecExecClient._shared_full_depth_acceptance = (
+                config.proactive_multi_full_depth_prior
+            )
 
         if self._proactive_mode == "adaptive":
             if SpecExecClient._shared_adaptive_policy is None:
@@ -115,6 +124,60 @@ class SpecExecClient:
             "adaptive",
         ]:
             raise ValueError(f"Invalid proactive_mode: {self._proactive_mode}")
+        if self._proactive_path_policy not in [
+            "single_best",
+            "deepest_multi",
+        ]:
+            raise ValueError(
+                "Invalid proactive_path_policy: "
+                f"{self._proactive_path_policy}"
+            )
+        if config.proactive_multi_max_deepest_leaves <= 0:
+            raise ValueError("multi.max_deepest_leaves must be positive")
+        if config.proactive_multi_min_bonus_per_leaf <= 0:
+            raise ValueError("multi.min_bonus_per_leaf must be positive")
+        if (
+            config.proactive_multi_max_bonus_per_leaf
+            < config.proactive_multi_min_bonus_per_leaf
+        ):
+            raise ValueError(
+                "multi.max_bonus_per_leaf must be >= min_bonus_per_leaf"
+            )
+        if config.proactive_multi_max_roots <= 0:
+            raise ValueError("multi.max_roots must be positive")
+        if config.proactive_multi_max_roots > config.proactive_max_budget:
+            raise ValueError(
+                "multi.max_roots must not exceed proactive max_budget"
+            )
+        if config.proactive_multi_min_root_probability < 0.0:
+            raise ValueError(
+                "multi.min_root_probability must be non-negative"
+            )
+        if config.proactive_multi_leaf_temperature <= 0.0:
+            raise ValueError("multi.leaf_temperature must be positive")
+        if not 0.0 <= config.proactive_multi_full_depth_prior <= 1.0:
+            raise ValueError("multi.full_depth_prior must be in [0, 1]")
+        if not 0.0 < config.proactive_multi_acceptance_ewma_alpha <= 1.0:
+            raise ValueError(
+                "multi.acceptance_ewma_alpha must be in (0, 1]"
+            )
+        if any(
+            not 0.0 <= coverage <= 1.0
+            for coverage in config.proactive_multi_depth_probability_coverage
+        ):
+            raise ValueError(
+                "multi.depth_probability_coverage values must be in [0, 1]"
+            )
+        if any(
+            later > earlier
+            for earlier, later in zip(
+                config.proactive_multi_depth_probability_coverage,
+                config.proactive_multi_depth_probability_coverage[1:],
+            )
+        ):
+            raise ValueError(
+                "multi.depth_probability_coverage must be non-increasing"
+            )
 
     async def _run_proactive_draft(
         self,
@@ -122,10 +185,15 @@ class SpecExecClient:
         request_start: float,
     ) -> ProactiveDraftResult:
         if self._proactive_client is None:
-            return ProactiveDraftResult(skipped_reason="disabled")
+            return ProactiveDraftResult(
+                skipped_reason="disabled",
+                path_policy=self._proactive_path_policy,
+            )
 
         if self._proactive_mode == "baseline":
-            self._proactive_client.draft()
+            self._proactive_client.draft(
+                SpecExecClient._shared_full_depth_acceptance
+            )
             return self._proactive_client.last_result or ProactiveDraftResult(
                 skipped_reason="no_candidate"
             )
@@ -140,6 +208,7 @@ class SpecExecClient:
                     planned_depth=0,
                     skipped_reason="adaptive_skip",
                     policy_reason=policy_reason,
+                    path_policy=self._proactive_path_policy,
                 )
 
         if target_result.done():
@@ -148,6 +217,7 @@ class SpecExecClient:
                 stopped_by_response=True,
                 skipped_reason="response_ready_before_proactive",
                 policy_reason=policy_reason,
+                path_policy=self._proactive_path_policy,
             )
 
         if self._adaptive_policy is not None:
@@ -167,10 +237,14 @@ class SpecExecClient:
                     skipped_reason="adaptive_deadline",
                     policy_reason=setup_decision.reason,
                     deadline_checks=[setup_deadline_check],
+                    path_policy=self._proactive_path_policy,
                 )
 
         setup_start = time.perf_counter()
-        session = self._proactive_client.start_session(planned_depth)
+        session = self._proactive_client.start_session(
+            planned_depth,
+            SpecExecClient._shared_full_depth_acceptance,
+        )
         if setup_deadline_check is not None:
             session.result.deadline_checks.append(setup_deadline_check)
         if self._device.type == "cuda":
@@ -187,14 +261,24 @@ class SpecExecClient:
                 return result
 
             layer_index = session.result.executed_depth
-            if self._adaptive_policy is not None:
+            while True:
+                batch_width = session.next_batch_width
+                if batch_width == 0:
+                    break
+                if self._adaptive_policy is None:
+                    break
+
                 layer_decision = self._adaptive_policy.can_start_layer(
                     layer_index=layer_index,
                     request_elapsed_ms=(
                         time.perf_counter() - request_start
                     )
                     * 1000,
+                    batch_width=batch_width,
                 )
+                pruned_root = False
+                if not layer_decision.allowed:
+                    pruned_root = session.prune_lowest_priority_root()
                 session.result.deadline_checks.append(
                     {
                         "stage": f"layer_{layer_index}",
@@ -204,12 +288,20 @@ class SpecExecClient:
                         "predicted_cost_ms": (
                             layer_decision.predicted_cost_ms
                         ),
+                        "batch_width": batch_width,
+                        "pruned_root": pruned_root,
                     }
                 )
-                if not layer_decision.allowed:
+                if layer_decision.allowed:
+                    break
+                if not pruned_root:
                     result = session.finish()
                     result.policy_reason = layer_decision.reason
                     return result
+
+            batch_width = session.next_batch_width
+            if batch_width == 0:
+                break
 
             start_event = None
             end_event = None
@@ -235,6 +327,7 @@ class SpecExecClient:
                     layer_index=layer_index,
                     wall_ms=wall_ms,
                     gpu_ms=gpu_ms,
+                    batch_width=batch_width,
                 )
             await asyncio.sleep(0)
 
@@ -678,24 +771,65 @@ class SpecExecClient:
             extra_token_id = torch.tensor(
                 [interim_t[last_accepted_token_idx]], device=self._device
             )
+            last_accepted_idx_value = int(last_accepted_token_idx.item())
+            extra_token_id_value = int(extra_token_id.item())
+
+            if proactive_result.deepest_leaf_indices:
+                observed_full_depth = (
+                    last_accepted_idx_value
+                    in proactive_result.deepest_leaf_indices
+                )
+                proactive_result.observed_full_depth = observed_full_depth
+                if self._proactive_path_policy == "deepest_multi":
+                    previous_rate = (
+                        SpecExecClient._shared_full_depth_acceptance
+                    )
+                    if previous_rate is None:
+                        previous_rate = (
+                            config.proactive_multi_full_depth_prior
+                        )
+                    alpha = config.proactive_multi_acceptance_ewma_alpha
+                    SpecExecClient._shared_full_depth_acceptance = (
+                        alpha * float(observed_full_depth)
+                        + (1.0 - alpha) * previous_rate
+                    )
 
             if self._proactive_client is not None:
                 self._previous_proactive_draft = self._proactive_draft
 
+            if self._proactive_path_policy == "single_best":
+                matched_root = (
+                    proactive_result.roots[0]
+                    if proactive_result.roots
+                    and proactive_result.roots[0].leaf_idx
+                    == last_accepted_idx_value
+                    and proactive_result.roots[0].token_id
+                    == extra_token_id_value
+                    else None
+                )
+            else:
+                matched_root = proactive_result.find_matching_root(
+                    last_accepted_idx_value,
+                    extra_token_id_value,
+                )
             if (
                 self._proactive_client is not None
-                and proactive_result.root_leaf_idx is not None
+                and matched_root is not None
                 and proactive_result.tree_prefix_len is not None
                 and proactive_result.tree_end is not None
-                and proactive_result.root_leaf_idx == last_accepted_token_idx
-                and extra_token_id == proactive_result.root_token_id
             ):
                 self._proactive_draft = True
-                self._reorder_by_sequence_proactive(
-                    best_seq_mask,
-                    proactive_result.tree_prefix_len,
-                    proactive_result.tree_end,
-                )
+                if self._proactive_path_policy == "single_best":
+                    self._reorder_by_sequence_proactive(
+                        best_seq_mask,
+                        proactive_result.tree_prefix_len,
+                        proactive_result.tree_end,
+                    )
+                else:
+                    self._reorder_by_sequence_proactive_multi(
+                        best_seq_mask,
+                        matched_root.node_indices,
+                    )
             else:
                 self._proactive_draft = False
                 self._reorder_by_sequence(best_seq_mask)
@@ -719,12 +853,13 @@ class SpecExecClient:
                 response_ms=response_received_ms,
                 aligned=self._proactive_draft,
                 proactive_executed=(
-                    proactive_result.root_leaf_idx is not None
+                    len(proactive_result.roots) > 0
                 ),
             )
 
         proactive_execution = {
             "mode": self._proactive_mode,
+            "path_policy": proactive_result.path_policy,
             "planned_depth": proactive_result.planned_depth,
             "executed_depth": proactive_result.executed_depth,
             "elapsed_ms": proactive_result.elapsed_ms,
@@ -738,6 +873,52 @@ class SpecExecClient:
             "skipped_reason": proactive_result.skipped_reason,
             "policy_reason": proactive_result.policy_reason,
             "deadline_checks": proactive_result.deadline_checks,
+            "max_leaf_depth": proactive_result.max_leaf_depth,
+            "deepest_leaf_count": proactive_result.deepest_leaf_count,
+            "selected_leaf_count": proactive_result.selected_leaf_count,
+            "root_count": len(proactive_result.roots),
+            "roots": [
+                root.as_dict() for root in proactive_result.roots
+            ],
+            "layer_batch_widths": proactive_result.layer_batch_widths,
+            "layer_active_root_counts": (
+                proactive_result.layer_active_root_counts
+            ),
+            "full_depth_acceptance": (
+                proactive_result.full_depth_acceptance
+            ),
+            "observed_full_depth": proactive_result.observed_full_depth,
+            "updated_full_depth_acceptance": (
+                SpecExecClient._shared_full_depth_acceptance
+                if self._proactive_path_policy == "deepest_multi"
+                else None
+            ),
+            "matched_root_id": (
+                matched_root.root_id if matched_root is not None else None
+            ),
+            "proactive_node_count": sum(
+                len(root.node_indices) for root in proactive_result.roots
+            ),
+            "matched_node_count": (
+                len(matched_root.node_indices)
+                if matched_root is not None
+                else 0
+            ),
+            "wasted_node_count": (
+                sum(
+                    len(root.node_indices)
+                    for root in proactive_result.roots
+                )
+                - (
+                    len(matched_root.node_indices)
+                    if matched_root is not None
+                    else 0
+                )
+            ),
+            "deadline_pruned_root_count": sum(
+                bool(check.get("pruned_root"))
+                for check in proactive_result.deadline_checks
+            ),
         }
         if self._adaptive_policy is not None:
             proactive_execution["controller"] = (
@@ -782,22 +963,12 @@ class SpecExecClient:
         proactive_tree_prefix_len: int,
         proactive_tree_end: int,
     ):
-        """
-        Reorders the tree and engine's kv cache in a valid sequence
-        when the tree generated by Proactive Draft is valid.
-
-        Args:
-            seq_mask: Sequence Mask
-            proactive_tree_prefix_len: Start of the tree generated by Proactive Draft
-            proactive_tree_end: End of the tree generated by Proactive Draft
-        """
+        """Original single-root proactive tree reorder."""
         seq_indices = torch.where(seq_mask != 0)[0]
         max_src_idx = proactive_tree_end
         mapping_tensor = torch.full(
             (max_src_idx,), -1, dtype=torch.long, device=self._device
         )
-
-        # Original Draft Tree
 
         new_prefix_len = int(torch.sum(seq_mask).item())
         if torch.any(seq_mask[self._tree.prefix_len :]):
@@ -811,8 +982,6 @@ class SpecExecClient:
             self._tree.positions[dest_indices] = dest_indices
             self._tree.parents[dest_indices] = dest_indices - 1
             self._tree.status[dest_indices] = self._tree.GENERATED
-
-        # Proactive Tree
 
         src_indices = torch.arange(
             proactive_tree_prefix_len, proactive_tree_end, device=self._device
@@ -841,25 +1010,26 @@ class SpecExecClient:
             ..., src_indices, proactive_tree_prefix_len:proactive_tree_end
         ]
 
-        self._tree.end = new_prefix_len + proactive_tree_end - proactive_tree_prefix_len
+        self._tree.end = (
+            new_prefix_len + proactive_tree_end - proactive_tree_prefix_len
+        )
         self._tree.prefix_len = new_prefix_len + 1
 
         self._tree.status[: self._tree.prefix_len - 1] = self._tree.PROMPT
-        self._tree.status[self._tree.prefix_len - 1 : self._tree.prefix_len + 1] = (
-            self._tree.PROCESSED
-        )
-        self._tree.status[self._tree.status == self._tree.POST_CANDIDATE] = (
-            self._tree.CANDIDATE
-        )
-        self._tree.status[self._tree.status == self._tree.POST_PROCESSED] = (
-            self._tree.PROCESSED
-        )
+        self._tree.status[
+            self._tree.prefix_len - 1 : self._tree.prefix_len + 1
+        ] = self._tree.PROCESSED
+        self._tree.status[
+            self._tree.status == self._tree.POST_CANDIDATE
+        ] = self._tree.CANDIDATE
+        self._tree.status[
+            self._tree.status == self._tree.POST_PROCESSED
+        ] = self._tree.PROCESSED
 
         self._tree.logprobs[self._tree.end :].zero_()
-        # FIXME: change to public property access
         self._tree._data[:, self._tree.end :].zero_()
 
-        _causal_mask = torch.tril(
+        causal_mask = torch.tril(
             torch.ones(
                 self._tree.prefix_len,
                 self._tree.prefix_len,
@@ -867,9 +1037,9 @@ class SpecExecClient:
                 device=self._device,
             )
         )
-        self._tree.amask[..., : self._tree.prefix_len, : self._tree.prefix_len] = (
-            _causal_mask
-        )
+        self._tree.amask[
+            ..., : self._tree.prefix_len, : self._tree.prefix_len
+        ] = causal_mask
         self._tree.amask[
             ..., self._tree.prefix_len : self._tree.end, : self._tree.prefix_len
         ] = 1.0
@@ -877,5 +1047,120 @@ class SpecExecClient:
         src_indices = seq_mask[: self._tree.prefix_len]
         src_indices = torch.where(src_indices)[0]
         dst_indices = torch.arange(src_indices.size(-1), device=self._device)
-
         self._engine.gather(src_indices, dst_indices)
+
+    def _reorder_by_sequence_proactive_multi(
+        self,
+        seq_mask: torch.Tensor,
+        proactive_node_indices: list[int],
+    ):
+        """Keep the validated sequence and one matching proactive subtree."""
+        seq_indices = torch.where(seq_mask != 0)[0]
+        proactive_src_indices = torch.tensor(
+            sorted(proactive_node_indices),
+            dtype=torch.long,
+            device=self._device,
+        )
+        if proactive_src_indices.numel() == 0:
+            self._reorder_by_sequence(seq_mask)
+            return
+
+        old_prefix_len = self._tree.prefix_len
+        new_prefix_len = int(seq_indices.numel())
+        proactive_dest_indices = torch.arange(
+            new_prefix_len,
+            new_prefix_len + proactive_src_indices.numel(),
+            device=self._device,
+        )
+        max_src_idx = max(
+            int(proactive_src_indices.max().item()) + 1,
+            int(seq_indices.max().item()) + 1,
+        )
+        mapping_tensor = torch.full(
+            (max_src_idx,), -1, dtype=torch.long, device=self._device
+        )
+        mapping_tensor[:old_prefix_len] = torch.arange(
+            old_prefix_len, device=self._device
+        )
+
+        accepted_draft_indices = seq_indices[seq_indices >= old_prefix_len]
+        if accepted_draft_indices.numel() > 0:
+            dest_indices = torch.arange(
+                old_prefix_len, new_prefix_len, device=self._device
+            )
+            mapping_tensor[accepted_draft_indices] = dest_indices
+            accepted_tokens = self._tree.tokens[
+                accepted_draft_indices
+            ].clone()
+            self._tree.tokens[dest_indices] = accepted_tokens
+            self._tree.positions[dest_indices] = dest_indices
+            self._tree.parents[dest_indices] = dest_indices - 1
+            self._tree.status[dest_indices] = self._tree.GENERATED
+
+        mapping_tensor[proactive_src_indices] = proactive_dest_indices
+        proactive_tokens = self._tree.tokens[proactive_src_indices].clone()
+        proactive_positions = self._tree.positions[
+            proactive_src_indices
+        ].clone()
+        proactive_parents = self._tree.parents[
+            proactive_src_indices
+        ].clone()
+        proactive_status = self._tree.status[proactive_src_indices].clone()
+        proactive_logprobs = self._tree.logprobs[
+            proactive_src_indices
+        ].clone()
+
+        processed_mask = proactive_status == self._tree.POST_PROCESSED
+        processed_src_indices = proactive_src_indices[processed_mask]
+        processed_dest_indices = proactive_dest_indices[processed_mask]
+        cache_src_indices = torch.cat(
+            [seq_indices, processed_src_indices]
+        )
+        cache_dest_indices = torch.cat(
+            [
+                torch.arange(new_prefix_len, device=self._device),
+                processed_dest_indices,
+            ]
+        )
+        self._engine.gather(cache_src_indices, cache_dest_indices)
+
+        self._tree.tokens[proactive_dest_indices] = proactive_tokens
+        self._tree.positions[proactive_dest_indices] = proactive_positions
+        mapped_parents = mapping_tensor[proactive_parents]
+        if torch.any(mapped_parents < 0):
+            raise RuntimeError("Proactive subtree contains an unmapped parent")
+        self._tree.parents[proactive_dest_indices] = mapped_parents
+        self._tree.status[proactive_dest_indices] = proactive_status
+        self._tree.logprobs[proactive_dest_indices] = proactive_logprobs
+
+        self._tree.end = new_prefix_len + proactive_src_indices.numel()
+        self._tree.prefix_len = new_prefix_len + 1
+        self._tree.status[: self._tree.prefix_len] = self._tree.PROMPT
+        self._tree.status[self._tree.prefix_len - 1] = self._tree.PROCESSED
+        self._tree.status[
+            self._tree.status == self._tree.POST_CANDIDATE
+        ] = self._tree.CANDIDATE
+        self._tree.status[
+            self._tree.status == self._tree.POST_PROCESSED
+        ] = self._tree.PROCESSED
+
+        self._tree.amask.zero_()
+        self._tree.amask[
+            ..., : self._tree.prefix_len, : self._tree.prefix_len
+        ] = torch.tril(
+            torch.ones(
+                self._tree.prefix_len,
+                self._tree.prefix_len,
+                dtype=self._dtype,
+                device=self._device,
+            )
+        )
+        for node_idx in range(self._tree.prefix_len, self._tree.end):
+            parent_idx = int(self._tree.parents[node_idx].item())
+            self._tree.amask[..., node_idx, : self._tree.end] = (
+                self._tree.amask[..., parent_idx, : self._tree.end]
+            )
+            self._tree.amask[..., node_idx, node_idx] = 1.0
+
+        self._tree.logprobs[self._tree.end :].zero_()
+        self._tree._data[:, self._tree.end :].zero_()

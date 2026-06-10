@@ -76,6 +76,37 @@ class AdaptiveProactivePolicyTest(unittest.TestCase):
         self.assertFalse(second_layer.allowed)
         self.assertEqual(second_layer.reason, "layer_deadline")
 
+    def test_batch_width_has_an_independent_latency_model(self):
+        policy = create_policy(safety_margin_ms=0.0)
+        policy.observe_cycle(100.0, aligned=True, proactive_executed=True)
+        policy.observe_step(
+            0,
+            wall_ms=20.0,
+            gpu_ms=15.0,
+            batch_width=2,
+        )
+        policy.observe_step(
+            0,
+            wall_ms=80.0,
+            gpu_ms=70.0,
+            batch_width=8,
+        )
+        policy.begin_cycle()
+
+        narrow = policy.can_start_layer(
+            0,
+            request_elapsed_ms=30.0,
+            batch_width=2,
+        )
+        wide = policy.can_start_layer(
+            0,
+            request_elapsed_ms=30.0,
+            batch_width=8,
+        )
+
+        self.assertTrue(narrow.allowed)
+        self.assertFalse(wide.allowed)
+
     def test_setup_is_skipped_when_response_may_arrive_early(self):
         policy = create_policy()
         policy.observe_cycle(100.0, aligned=True, proactive_executed=True)

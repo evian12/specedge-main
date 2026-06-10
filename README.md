@@ -96,6 +96,10 @@ The `specedge.example.yaml` configuration file contains the following settings:
     - `interruptible`: Checks for the server response between proactive layers
     - `adaptive`: Uses response deadlines, per-layer latency models, uncertainty,
       and alignment feedback to decide whether each proactive layer should start
+  - `path_policy`: Proactive result selection policy
+    - `single_best`: Original one-leaf, one-bonus behavior
+    - `deepest_multi`: Selects multiple maximum-depth leaves and dynamically
+      allocates bonus-token roots
   - `max_n_beams`, `max_beam_len`, `max_branch_width`, `max_budget`: Proactive drafting parameters
 - `max_new_tokens`: Maximum tokens to generate per request
 - `max_request_num`: Total requests to process (-1 for all)
@@ -132,6 +136,9 @@ change only the proactive policy and write to separate experiment directories:
 
 # Interruptible execution plus online depth and alignment control
 ./script/client_host.sh -f config/specedge_4090_jetson_adaptive.yaml
+
+# Adaptive multi-leaf, multi-bonus proactive drafting
+./script/client_host.sh -f config/specedge_4090_jetson_deepest_multi.yaml
 ```
 
 Client JSONL records keep the original `target.proactive` fields and add
@@ -150,6 +157,23 @@ predicted_cost = layer_mean + uncertainty_scale * layer_error
 
 The next stage starts only when `predicted_cost + safety_margin <= remaining`.
 Each proactive depth has an independent latency and error EWMA.
+
+The `deepest_multi` policy preserves `single_best` as the default baseline. It:
+
+1. Finds all leaves at the maximum draft-tree depth and keeps the highest-score
+   leaves up to `max_deepest_leaves`.
+2. Gives every selected leaf at least `min_bonus_per_leaf` bonus candidate.
+3. Adds more bonus candidates while
+   `full_depth_acceptance * leaf_probability * bonus_probability` exceeds
+   `min_root_probability`, subject to `max_roots`.
+4. Expands all roots at the first proactive layer, then retains roots covering
+   the configured cumulative probability at later layers.
+5. Checks the adaptive response deadline before every batched proactive layer.
+6. Keeps only the subtree whose `(leaf, bonus)` pair matches validation.
+
+The complete-depth acceptance rate starts from `full_depth_prior` and is updated
+online with an EWMA. Layer latency is tracked separately by depth and proactive
+batch width.
 
 Compare completed runs with:
 

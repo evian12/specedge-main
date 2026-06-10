@@ -1,4 +1,5 @@
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -64,6 +65,35 @@ def main(config_file: str):
     proactive_max_branch_width = config["client"]["proactive"]["max_branch_width"]
     proactive_max_budget = config["client"]["proactive"]["max_budget"]
     proactive_mode = config["client"]["proactive"].get("mode", "baseline")
+    proactive_path_policy = config["client"]["proactive"].get(
+        "path_policy", "single_best"
+    )
+    proactive_multi = config["client"]["proactive"].get("multi", {})
+    proactive_multi_max_deepest_leaves = proactive_multi.get(
+        "max_deepest_leaves", 8
+    )
+    proactive_multi_min_bonus_per_leaf = proactive_multi.get(
+        "min_bonus_per_leaf", 1
+    )
+    proactive_multi_max_bonus_per_leaf = proactive_multi.get(
+        "max_bonus_per_leaf", 4
+    )
+    proactive_multi_max_roots = proactive_multi.get("max_roots", 8)
+    proactive_multi_min_root_probability = proactive_multi.get(
+        "min_root_probability", 0.01
+    )
+    proactive_multi_leaf_temperature = proactive_multi.get(
+        "leaf_temperature", 1.0
+    )
+    proactive_multi_full_depth_prior = proactive_multi.get(
+        "full_depth_prior", 0.5
+    )
+    proactive_multi_acceptance_ewma_alpha = proactive_multi.get(
+        "acceptance_ewma_alpha", 0.1
+    )
+    proactive_multi_depth_probability_coverage = proactive_multi.get(
+        "depth_probability_coverage", [1.0, 0.8, 0.5]
+    )
     proactive_adaptive = config["client"]["proactive"].get("adaptive", {})
     proactive_adaptive_ewma_alpha = proactive_adaptive.get("ewma_alpha", 0.2)
     proactive_adaptive_min_alignment_rate = proactive_adaptive.get(
@@ -82,6 +112,7 @@ def main(config_file: str):
 
     logger.debug("proactive_type: %s", proactive_type)
     logger.debug("proactive_mode: %s", proactive_mode)
+    logger.debug("proactive_path_policy: %s", proactive_path_policy)
     logger.debug("proactive_max_n_beams: %s", proactive_max_n_beams)
     logger.debug("proactive_max_beam_len: %s", proactive_max_beam_len)
     logger.debug("proactive_max_branch_width: %s", proactive_max_branch_width)
@@ -121,6 +152,34 @@ def main(config_file: str):
                 "SPECEDGE_MAX_BUDGET": max_budget,
                 "SPECEDGE_PROACTIVE_TYPE": proactive_type,
                 "SPECEDGE_PROACTIVE_MODE": proactive_mode,
+                "SPECEDGE_PROACTIVE_PATH_POLICY": proactive_path_policy,
+                "SPECEDGE_PROACTIVE_MULTI_MAX_DEEPEST_LEAVES": (
+                    proactive_multi_max_deepest_leaves
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_MIN_BONUS_PER_LEAF": (
+                    proactive_multi_min_bonus_per_leaf
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_MAX_BONUS_PER_LEAF": (
+                    proactive_multi_max_bonus_per_leaf
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_MAX_ROOTS": (
+                    proactive_multi_max_roots
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_MIN_ROOT_PROBABILITY": (
+                    proactive_multi_min_root_probability
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_LEAF_TEMPERATURE": (
+                    proactive_multi_leaf_temperature
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_FULL_DEPTH_PRIOR": (
+                    proactive_multi_full_depth_prior
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_ACCEPTANCE_EWMA_ALPHA": (
+                    proactive_multi_acceptance_ewma_alpha
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_DEPTH_PROBABILITY_COVERAGE": json.dumps(
+                    proactive_multi_depth_probability_coverage
+                ),
                 "SPECEDGE_PROACTIVE_MAX_N_BEAMS": proactive_max_n_beams,
                 "SPECEDGE_PROACTIVE_MAX_BEAM_LEN": proactive_max_beam_len,
                 "SPECEDGE_PROACTIVE_MAX_BRANCH_WIDTH": proactive_max_branch_width,

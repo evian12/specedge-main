@@ -109,6 +109,8 @@ class AdaptiveProactivePolicy:
         self.setup = EwmaEstimate(ewma_alpha)
         self.layer_wall: dict[int, EwmaEstimate] = {}
         self.layer_gpu: dict[int, EwmaEstimate] = {}
+        self.layer_wall_by_width: dict[tuple[int, int], EwmaEstimate] = {}
+        self.layer_gpu_by_width: dict[tuple[int, int], EwmaEstimate] = {}
         self.alignment_rate_ewma: Optional[float] = None
 
     def _update_ewma(self, previous: Optional[float], value: float) -> float:
@@ -172,12 +174,19 @@ class AdaptiveProactivePolicy:
         self,
         layer_index: int,
         request_elapsed_ms: float,
+        batch_width: Optional[int] = None,
     ) -> DeadlineDecision:
         if self._current_warmup:
             return DeadlineDecision(True, "warmup", None, None)
 
         remaining_ms = self._response_remaining_ms(request_elapsed_ms)
-        estimate = self.layer_wall.get(layer_index)
+        estimate = (
+            self.layer_wall_by_width.get((layer_index, batch_width))
+            if batch_width is not None
+            else None
+        )
+        if estimate is None:
+            estimate = self.layer_wall.get(layer_index)
         layer_ms = (
             estimate.upper_bound(self._uncertainty_scale)
             if estimate is not None
@@ -207,6 +216,7 @@ class AdaptiveProactivePolicy:
         layer_index: int,
         wall_ms: float,
         gpu_ms: Optional[float],
+        batch_width: Optional[int] = None,
     ) -> None:
         self.layer_wall.setdefault(
             layer_index, EwmaEstimate(self._alpha)
@@ -215,6 +225,14 @@ class AdaptiveProactivePolicy:
             self.layer_gpu.setdefault(
                 layer_index, EwmaEstimate(self._alpha)
             ).observe(gpu_ms)
+        if batch_width is not None:
+            self.layer_wall_by_width.setdefault(
+                (layer_index, batch_width), EwmaEstimate(self._alpha)
+            ).observe(wall_ms)
+            if gpu_ms is not None:
+                self.layer_gpu_by_width.setdefault(
+                    (layer_index, batch_width), EwmaEstimate(self._alpha)
+                ).observe(gpu_ms)
 
     def observe_cycle(
         self,
@@ -239,6 +257,18 @@ class AdaptiveProactivePolicy:
             "layer_gpu": {
                 str(index): estimate.stats()
                 for index, estimate in sorted(self.layer_gpu.items())
+            },
+            "layer_wall_by_width": {
+                f"{index}:{width}": estimate.stats()
+                for (index, width), estimate in sorted(
+                    self.layer_wall_by_width.items()
+                )
+            },
+            "layer_gpu_by_width": {
+                f"{index}:{width}": estimate.stats()
+                for (index, width), estimate in sorted(
+                    self.layer_gpu_by_width.items()
+                )
             },
             "alignment_rate_ewma": self.alignment_rate_ewma,
             "uncertainty_scale": self._uncertainty_scale,
