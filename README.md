@@ -89,6 +89,12 @@ The `specedge.example.yaml` configuration file contains the following settings:
 - `reasoning`: Enable reasoning
 - `req_offset`: Offset for request sampling
 - `max_n_beams`, `max_beam_len`, `max_branch_width`, `max_budget`: Speculative decoding parameters
+- `initial_draft`: Initial speculative-tree depth policy
+  - `mode: fixed`: Original behavior using `max_beam_len`
+  - `mode: linucb`: Online Disjoint LinUCB selection from `candidate_depths`
+  - `warmup_per_depth`: Forced samples collected for each candidate depth
+  - `exploration_weight`: LinUCB uncertainty bonus
+  - `forced_exploration_interval`: Periodic least-sampled-depth exploration
 - `proactive`: Proactive edge drafting configuration
   - `type`: Proactive drafting mode (excluded/included)
   - `mode`: Proactive execution policy
@@ -139,6 +145,9 @@ change only the proactive policy and write to separate experiment directories:
 
 # Adaptive multi-leaf, multi-bonus proactive drafting
 ./script/client_host.sh -f config/specedge_4090_jetson_deepest_multi.yaml
+
+# LinUCB initial depth plus adaptive multi-leaf proactive drafting
+./script/client_host.sh -f config/specedge_4090_jetson_bandit.yaml
 ```
 
 Client JSONL records keep the original `target.proactive` fields and add
@@ -175,6 +184,19 @@ The complete-depth acceptance rate starts from `full_depth_prior` and is updated
 online with an EWMA. Layer latency is tracked separately by depth and proactive
 batch width.
 
+The optional initial-draft LinUCB controller selects a depth before every
+non-prefill speculative cycle. It uses only historical acceptance, draft cost,
+validation-response, tree-size, context, and proactive-hit features available
+before the decision. The reward is clipped per-cycle throughput:
+
+```text
+reward = 1000 * generated_tokens / cycle_latency_ms
+```
+
+Each candidate depth has an independent linear reward model. The original
+fixed-depth behavior remains the default when `initial_draft` is omitted or
+uses `mode: fixed`.
+
 Compare completed runs with:
 
 ```bash
@@ -182,7 +204,9 @@ python src/metric/proactive.py -d \
   result/4090_jetson/specedge \
   result/4090_jetson/specedge_no_proactive \
   result/4090_jetson/specedge_interruptible \
-  result/4090_jetson/specedge_adaptive
+  result/4090_jetson/specedge_adaptive \
+  result/4090_jetson/specedge_deepest_multi \
+  result/4090_jetson/specedge_bandit
 ```
 
 ## Auto Batch

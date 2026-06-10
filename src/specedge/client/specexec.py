@@ -8,6 +8,10 @@ import torch
 import log
 import util
 from config import SpecEdgeClientConfig as config
+from specedge.client.initial_draft_policy import (
+    InitialDraftDecision,
+    LinUCBInitialDraftPolicy,
+)
 from specedge.client.proactive import (
     ProactiveDraftResult,
     SpecExecProactiveDraft,
@@ -20,6 +24,7 @@ from specedge.tree import Tree
 class SpecExecClient:
     _shared_adaptive_policy: Optional[AdaptiveProactivePolicy] = None
     _shared_full_depth_acceptance: Optional[float] = None
+    _shared_initial_draft_policy: Optional[LinUCBInitialDraftPolicy] = None
 
     def __init__(
         self,
@@ -47,6 +52,7 @@ class SpecExecClient:
         self._max_beam_len = config.max_beam_len
         self._max_branch_width = config.max_branch_width
         self._max_budget = config.max_budget
+        self._initial_draft_mode = config.initial_draft_mode
 
         self._proactive_type = config.proactive_type
         self._proactive_mode = config.proactive_mode
@@ -78,6 +84,7 @@ class SpecExecClient:
 
         self._proactive_client: Optional[SpecExecProactiveDraft] = None
         self._adaptive_policy: Optional[AdaptiveProactivePolicy] = None
+        self._initial_draft_policy: Optional[LinUCBInitialDraftPolicy] = None
         self._previous_proactive_draft = False
         self._proactive_draft = False
         if self._proactive_type != "disabled":
@@ -114,8 +121,38 @@ class SpecExecClient:
                     ),
                 )
             self._adaptive_policy = SpecExecClient._shared_adaptive_policy
+        if self._initial_draft_mode == "linucb":
+            if SpecExecClient._shared_initial_draft_policy is None:
+                SpecExecClient._shared_initial_draft_policy = (
+                    LinUCBInitialDraftPolicy(
+                        candidate_depths=(
+                            config.initial_draft_candidate_depths
+                        ),
+                        max_depth=self._max_beam_len,
+                        exploration_weight=(
+                            config.initial_draft_exploration_weight
+                        ),
+                        warmup_per_depth=(
+                            config.initial_draft_warmup_per_depth
+                        ),
+                        forced_exploration_interval=(
+                            config.initial_draft_forced_exploration_interval
+                        ),
+                        ridge_lambda=config.initial_draft_ridge_lambda,
+                        reward_clip=config.initial_draft_reward_clip,
+                        ewma_alpha=config.initial_draft_ewma_alpha,
+                        seed=config.seed,
+                    )
+                )
+            self._initial_draft_policy = (
+                SpecExecClient._shared_initial_draft_policy
+            )
 
     def _verify_configs(self):
+        if self._initial_draft_mode not in ["fixed", "linucb"]:
+            raise ValueError(
+                f"Invalid initial_draft mode: {self._initial_draft_mode}"
+            )
         if self._proactive_type not in ["included", "excluded", "disabled"]:
             raise ValueError(f"Invalid proactive_type: {self._proactive_type}")
         if self._proactive_mode not in [
@@ -406,8 +443,23 @@ class SpecExecClient:
         prefill=False,
         max_fresh_tokens: Optional[int] = None,
     ) -> torch.Tensor:
+        cycle_start = time.perf_counter()
+        initial_draft_decision: Optional[InitialDraftDecision] = None
+        selected_depth = self._max_beam_len
+        if self._initial_draft_policy is not None and not prefill:
+            initial_draft_decision = (
+                self._initial_draft_policy.select_depth(
+                    context_ratio=self._prefix_tokens.numel()
+                    / max(1, self._max_len)
+                )
+            )
+            selected_depth = initial_draft_decision.depth
+
         with util.Timing(device=self._device, mode="sync") as draft_t:
-            draft_stats = self._grow_tree(prefill)
+            draft_stats = self._grow_tree(
+                prefill,
+                selected_depth=selected_depth,
+            )
 
         with util.Timing(device=self._device, mode="sync") as target_t:
             fresh_token_ids, target_stats = await self._validate_tree(req_idx, prefill)
@@ -420,6 +472,65 @@ class SpecExecClient:
             fresh_token_ids = fresh_token_ids[: eos_positions[0, 0].item() + 1]
 
         target_stats["num_accepted_tokens"] = fresh_token_ids.numel()
+        cycle_ms = (time.perf_counter() - cycle_start) * 1000
+        initial_draft_log = {
+            "mode": self._initial_draft_mode,
+            "selected_depth": selected_depth,
+            "selection_reason": (
+                initial_draft_decision.reason
+                if initial_draft_decision is not None
+                else ("prefill" if prefill else "fixed")
+            ),
+            "executed_depth": draft_stats["executed_depth"],
+            "node_count": draft_stats["node_count"],
+            "accepted_draft_depth": max(
+                0, fresh_token_ids.numel() - 1
+            ),
+            "cycle_ms": cycle_ms,
+            "reward": None,
+            "features": (
+                initial_draft_decision.features
+                if initial_draft_decision is not None
+                else None
+            ),
+            "scores": (
+                {
+                    str(depth): score
+                    for depth, score in initial_draft_decision.scores.items()
+                }
+                if initial_draft_decision is not None
+                else {}
+            ),
+        }
+        if (
+            self._initial_draft_policy is not None
+            and initial_draft_decision is not None
+        ):
+            proactive_execution = target_stats["proactive_execution"]
+            reward = self._initial_draft_policy.observe(
+                decision=initial_draft_decision,
+                accepted_tokens=fresh_token_ids.numel(),
+                cycle_ms=cycle_ms,
+                draft_ms=draft_t.elapsed,
+                response_ms=proactive_execution.get(
+                    "response_received_ms"
+                ),
+                node_count=draft_stats["node_count"],
+                max_budget=self._max_budget,
+                proactive_hit=target_stats["proactive"],
+                proactive_depth=int(
+                    proactive_execution.get("executed_depth", 0)
+                ),
+                proactive_max_depth=config.proactive_max_beam_len,
+            )
+            initial_draft_log["reward"] = reward
+            initial_draft_log["controller"] = (
+                self._initial_draft_policy.stats()
+            )
+            initial_draft_log["feature_names"] = (
+                self._initial_draft_policy.feature_names
+            )
+
         self._result_logger.log(
             {
                 "client_idx": self._client_idx,
@@ -428,6 +539,7 @@ class SpecExecClient:
                 "draft": {
                     "forward": draft_stats["forward_t"],
                     "end_to_end": draft_t.elapsed,
+                    "initial_draft": initial_draft_log,
                 },
                 "target": {
                     "client_preprocess": target_stats["preprocess_t"],
@@ -447,15 +559,26 @@ class SpecExecClient:
 
         return fresh_token_ids
 
-    def _grow_tree(self, prefill: bool):
+    def _grow_tree(
+        self,
+        prefill: bool,
+        selected_depth: Optional[int] = None,
+    ):
         self._logger.debug("Growing tree")
 
         # draft forward times
         draft_forward_times = []
 
-        max_beam_len = self._max_beam_len
+        max_beam_len = (
+            self._max_beam_len
+            if selected_depth is None
+            else min(self._max_beam_len, max(0, selected_depth))
+        )
         if self._proactive_type == "included" and self._proactive_draft:
-            max_beam_len = max(0, self._max_beam_len - config.proactive_max_beam_len)
+            max_beam_len = max(
+                0,
+                max_beam_len - config.proactive_max_beam_len,
+            )
 
         if torch.where(self._tree.status == self._tree.CANDIDATE)[0].numel() == 0:
             max_beam_len = 0
@@ -504,7 +627,11 @@ class SpecExecClient:
             self._logger.debug("Trimming tree")
             self._trim_by_budget()
 
-        return {"forward_t": draft_forward_times}
+        return {
+            "forward_t": draft_forward_times,
+            "executed_depth": len(draft_forward_times),
+            "node_count": self._tree.end - self._tree.prefix_len,
+        }
 
     def _process_candidates(self, warmup: bool):
         self._logger.debug("Processing candidates")

@@ -45,6 +45,23 @@ def main(config_file: str):
     max_beam_len = config["client"]["max_beam_len"]
     max_branch_width = config["client"]["max_branch_width"]
     max_budget = config["client"]["max_budget"]
+    initial_draft = config["client"].get("initial_draft", {})
+    initial_draft_mode = initial_draft.get("mode", "fixed")
+    initial_draft_candidate_depths = initial_draft.get(
+        "candidate_depths", [max_beam_len]
+    )
+    initial_draft_warmup_per_depth = initial_draft.get(
+        "warmup_per_depth", 4
+    )
+    initial_draft_exploration_weight = initial_draft.get(
+        "exploration_weight", 0.3
+    )
+    initial_draft_forced_exploration_interval = initial_draft.get(
+        "forced_exploration_interval", 32
+    )
+    initial_draft_ridge_lambda = initial_draft.get("ridge_lambda", 1.0)
+    initial_draft_reward_clip = initial_draft.get("reward_clip", 20.0)
+    initial_draft_ewma_alpha = initial_draft.get("ewma_alpha", 0.2)
     req_offset = config["client"]["req_offset"]
     sample_req_cnt = config["client"]["sample_req_cnt"]
     reasoning = config["client"]["reasoning"]
@@ -150,6 +167,28 @@ def main(config_file: str):
                 "SPECEDGE_MAX_BEAM_LEN": max_beam_len,
                 "SPECEDGE_MAX_BRANCH_WIDTH": max_branch_width,
                 "SPECEDGE_MAX_BUDGET": max_budget,
+                "SPECEDGE_INITIAL_DRAFT_MODE": initial_draft_mode,
+                "SPECEDGE_INITIAL_DRAFT_CANDIDATE_DEPTHS": json.dumps(
+                    initial_draft_candidate_depths
+                ),
+                "SPECEDGE_INITIAL_DRAFT_WARMUP_PER_DEPTH": (
+                    initial_draft_warmup_per_depth
+                ),
+                "SPECEDGE_INITIAL_DRAFT_EXPLORATION_WEIGHT": (
+                    initial_draft_exploration_weight
+                ),
+                "SPECEDGE_INITIAL_DRAFT_FORCED_EXPLORATION_INTERVAL": (
+                    initial_draft_forced_exploration_interval
+                ),
+                "SPECEDGE_INITIAL_DRAFT_RIDGE_LAMBDA": (
+                    initial_draft_ridge_lambda
+                ),
+                "SPECEDGE_INITIAL_DRAFT_REWARD_CLIP": (
+                    initial_draft_reward_clip
+                ),
+                "SPECEDGE_INITIAL_DRAFT_EWMA_ALPHA": (
+                    initial_draft_ewma_alpha
+                ),
                 "SPECEDGE_PROACTIVE_TYPE": proactive_type,
                 "SPECEDGE_PROACTIVE_MODE": proactive_mode,
                 "SPECEDGE_PROACTIVE_PATH_POLICY": proactive_path_policy,

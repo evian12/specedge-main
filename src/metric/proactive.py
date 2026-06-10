@@ -33,6 +33,15 @@ def summarize(data_dir: Path) -> dict[str, Any]:
         record["target"].get("proactive_execution", {})
         for record in records
     ]
+    initial_drafts = [
+        record["draft"].get("initial_draft", {})
+        for record in records
+    ]
+    initial_decisions = [
+        detail
+        for detail in initial_drafts
+        if detail.get("selection_reason") != "prefill"
+    ]
     modes = {
         detail.get("mode")
         for detail in details
@@ -72,6 +81,16 @@ def summarize(data_dir: Path) -> dict[str, Any]:
         "experiment": str(data_dir),
         "mode": mode,
         "path_policy": path_policy,
+        "initial_draft_mode": ",".join(
+            sorted(
+                {
+                    detail.get("mode")
+                    for detail in initial_drafts
+                    if detail.get("mode") is not None
+                }
+            )
+        )
+        or "legacy",
         "cycles": len(records),
         "tokens_per_second": accepted_tokens * 1000 / sum(cycle_ms),
         "cycle_ms": _mean(cycle_ms),
@@ -182,6 +201,27 @@ def summarize(data_dir: Path) -> dict[str, Any]:
             for detail in details
         )
         / len(records),
+        "initial_selected_depth": _mean(
+            [
+                float(detail["selected_depth"])
+                for detail in initial_decisions
+                if detail.get("selected_depth") is not None
+            ]
+        ),
+        "initial_accepted_depth": _mean(
+            [
+                float(detail["accepted_draft_depth"])
+                for detail in initial_decisions
+                if detail.get("accepted_draft_depth") is not None
+            ]
+        ),
+        "initial_reward": _mean(
+            [
+                float(detail["reward"])
+                for detail in initial_decisions
+                if detail.get("reward") is not None
+            ]
+        ),
     }
 
 
@@ -201,6 +241,7 @@ def main() -> None:
         "experiment",
         "mode",
         "path",
+        "initial",
         "cycles",
         "tok/s",
         "cycle ms",
@@ -222,6 +263,9 @@ def main() -> None:
         "interrupt %",
         "skip %",
         "deadline %",
+        "init depth",
+        "accept depth",
+        "reward",
     ]
     rows = []
     for data_dir in args.data:
@@ -231,6 +275,7 @@ def main() -> None:
                 summary["experiment"],
                 summary["mode"],
                 summary["path_policy"],
+                summary["initial_draft_mode"],
                 str(summary["cycles"]),
                 _format(summary["tokens_per_second"]),
                 _format(summary["cycle_ms"]),
@@ -257,6 +302,9 @@ def main() -> None:
                 _format(summary["interrupted_rate"] * 100, 1),
                 _format(summary["skip_rate"] * 100, 1),
                 _format(summary["deadline_stop_rate"] * 100, 1),
+                _format(summary["initial_selected_depth"]),
+                _format(summary["initial_accepted_depth"]),
+                _format(summary["initial_reward"]),
             ]
         )
 

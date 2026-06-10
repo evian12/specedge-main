@@ -113,6 +113,50 @@ class SpecEdgeClientConfig(metaclass=_ConfigMeta):
         cls.max_branch_width = int(cls._from_env("SPECEDGE_MAX_BRANCH_WIDTH"))
         cls.max_budget = int(cls._from_env("SPECEDGE_MAX_BUDGET"))
 
+        # initial draft depth configuration
+        cls.initial_draft_mode = cls._from_env_default(
+            "SPECEDGE_INITIAL_DRAFT_MODE", "fixed"
+        )
+        cls.initial_draft_candidate_depths = [
+            int(value)
+            for value in json.loads(
+                cls._from_env_default(
+                    "SPECEDGE_INITIAL_DRAFT_CANDIDATE_DEPTHS",
+                    f"[{cls.max_beam_len}]",
+                )
+            )
+        ]
+        cls.initial_draft_warmup_per_depth = int(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_WARMUP_PER_DEPTH", "4"
+            )
+        )
+        cls.initial_draft_exploration_weight = float(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_EXPLORATION_WEIGHT", "0.3"
+            )
+        )
+        cls.initial_draft_forced_exploration_interval = int(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_FORCED_EXPLORATION_INTERVAL", "32"
+            )
+        )
+        cls.initial_draft_ridge_lambda = float(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_RIDGE_LAMBDA", "1.0"
+            )
+        )
+        cls.initial_draft_reward_clip = float(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_REWARD_CLIP", "20.0"
+            )
+        )
+        cls.initial_draft_ewma_alpha = float(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_EWMA_ALPHA", "0.2"
+            )
+        )
+
         # proactive draft configuration
         cls.proactive_type = cls._from_env("SPECEDGE_PROACTIVE_TYPE")
         cls.proactive_max_n_beams = int(cls._from_env("SPECEDGE_PROACTIVE_MAX_N_BEAMS"))

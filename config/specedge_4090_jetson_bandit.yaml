@@ -3,7 +3,7 @@ opt: 2
 
 base:
   result_path: "result/4090_jetson"
-  exp_name: "specedge_deepest_multi"
+  exp_name: "specedge_bandit"
   dtype: fp16
   seed: 42
   ssh_key: ~/.ssh/id_ed25519
@@ -28,9 +28,18 @@ client:
   sample_req_cnt: 8
   req_offset: 0
   max_n_beams: 32
-  max_beam_len: 4
+  max_beam_len: 7
   max_branch_width: 16
   max_budget: 32
+  initial_draft:
+    mode: linucb
+    candidate_depths: [3, 4, 5, 6, 7]
+    warmup_per_depth: 4
+    exploration_weight: 0.3
+    forced_exploration_interval: 32
+    ridge_lambda: 1.0
+    reward_clip: 20.0
+    ewma_alpha: 0.2
   proactive:
     type: excluded
     mode: adaptive
@@ -40,10 +49,10 @@ client:
     max_branch_width: 16
     max_budget: 32
     multi:
-      max_deepest_leaves: 4
+      max_deepest_leaves: 8
       min_bonus_per_leaf: 1
       max_bonus_per_leaf: 4
-      max_roots: 4
+      max_roots: 8
       min_root_probability: 0.01
       leaf_temperature: 1.0
       full_depth_prior: 0.5
