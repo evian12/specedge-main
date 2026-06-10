@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Optional
 
 import numpy as np
@@ -7,12 +8,18 @@ import torch
 import log
 import util
 from config import SpecEdgeClientConfig as config
-from specedge.client.proactive import SpecExecProactiveDraft
+from specedge.client.proactive import (
+    ProactiveDraftResult,
+    SpecExecProactiveDraft,
+)
+from specedge.client.proactive_policy import AdaptiveProactivePolicy
 from specedge.network.grpc import GrpcClientController
 from specedge.tree import Tree
 
 
 class SpecExecClient:
+    _shared_adaptive_policy: Optional[AdaptiveProactivePolicy] = None
+
     def __init__(
         self,
         engine,
@@ -41,6 +48,7 @@ class SpecExecClient:
         self._max_budget = config.max_budget
 
         self._proactive_type = config.proactive_type
+        self._proactive_mode = config.proactive_mode
 
         self._max_new_tokens = config.max_new_tokens
         self._client_idx = config.client_idx
@@ -67,6 +75,9 @@ class SpecExecClient:
         self._validator = GrpcClientController(host=config.host, device=self._device)
 
         self._proactive_client: Optional[SpecExecProactiveDraft] = None
+        self._adaptive_policy: Optional[AdaptiveProactivePolicy] = None
+        self._previous_proactive_draft = False
+        self._proactive_draft = False
         if self._proactive_type != "disabled":
             self._proactive_client = SpecExecProactiveDraft(
                 tree=self._tree,
@@ -74,15 +85,90 @@ class SpecExecClient:
                 max_len=self._max_len,
             )
 
-            # Whether Proactive Draft was executed in the previous iter
-            self._previous_proactive_draft = False
-
-            # Whether Proactive Draft is executed in the current iter
-            self._proactive_draft = False
+        if self._proactive_mode == "adaptive":
+            if SpecExecClient._shared_adaptive_policy is None:
+                SpecExecClient._shared_adaptive_policy = AdaptiveProactivePolicy(
+                    max_depth=config.proactive_max_beam_len,
+                    ewma_alpha=config.proactive_adaptive_ewma_alpha,
+                    min_alignment_rate=(
+                        config.proactive_adaptive_min_alignment_rate
+                    ),
+                    warmup_cycles=config.proactive_adaptive_warmup_cycles,
+                    exploration_interval=(
+                        config.proactive_adaptive_exploration_interval
+                    ),
+                    safety_margin_ms=(
+                        config.proactive_adaptive_safety_margin_ms
+                    ),
+                )
+            self._adaptive_policy = SpecExecClient._shared_adaptive_policy
 
     def _verify_configs(self):
         if self._proactive_type not in ["included", "excluded", "disabled"]:
             raise ValueError(f"Invalid proactive_type: {self._proactive_type}")
+        if self._proactive_mode not in [
+            "baseline",
+            "interruptible",
+            "adaptive",
+        ]:
+            raise ValueError(f"Invalid proactive_mode: {self._proactive_mode}")
+
+    async def _run_proactive_draft(
+        self, target_result: asyncio.Task
+    ) -> ProactiveDraftResult:
+        if self._proactive_client is None:
+            return ProactiveDraftResult(skipped_reason="disabled")
+
+        if self._proactive_mode == "baseline":
+            self._proactive_client.draft()
+            return self._proactive_client.last_result or ProactiveDraftResult(
+                skipped_reason="no_candidate"
+            )
+
+        if target_result.done():
+            return ProactiveDraftResult(
+                stopped_by_response=True,
+                skipped_reason="response_ready_before_proactive",
+            )
+
+        planned_depth = config.proactive_max_beam_len
+        policy_reason = None
+        if self._adaptive_policy is not None:
+            planned_depth, policy_reason = self._adaptive_policy.choose_depth()
+            if planned_depth == 0:
+                return ProactiveDraftResult(
+                    planned_depth=0,
+                    skipped_reason="adaptive_skip",
+                    policy_reason=policy_reason,
+                )
+
+        setup_start = time.perf_counter()
+        session = self._proactive_client.start_session(planned_depth)
+        if self._device.type == "cuda":
+            await asyncio.to_thread(torch.cuda.synchronize, self._device)
+        if self._adaptive_policy is not None:
+            self._adaptive_policy.observe_setup(
+                (time.perf_counter() - setup_start) * 1000
+            )
+        await asyncio.sleep(0)
+        while session.can_step:
+            if target_result.done():
+                result = session.finish(stopped_by_response=True)
+                result.policy_reason = policy_reason
+                return result
+
+            step_start = time.perf_counter()
+            session.step()
+            if self._device.type == "cuda":
+                await asyncio.to_thread(torch.cuda.synchronize, self._device)
+            step_ms = (time.perf_counter() - step_start) * 1000
+            if self._adaptive_policy is not None:
+                self._adaptive_policy.observe_step(step_ms)
+            await asyncio.sleep(0)
+
+        result = session.finish()
+        result.policy_reason = policy_reason
+        return result
 
     async def generate(self, req_idx: int):
         """
@@ -186,6 +272,9 @@ class SpecExecClient:
                     "prefill": target_stats["prefill"],
                     "proactive": target_stats["proactive"],
                     "prev_proactive": target_stats["previous_proactive"],
+                    "proactive_execution": target_stats[
+                        "proactive_execution"
+                    ],
                 },
                 "num_accepted_tokens": target_stats["num_accepted_tokens"],
             }
@@ -431,6 +520,7 @@ class SpecExecClient:
 
         with util.Timing(device=self._device, mode=self._target_time_mode) as wait_t:
             prefix = self._prompt if prefill else None
+            request_start = time.perf_counter()
             target_result = asyncio.create_task(
                 self._validator.request(
                     client_idx=self._client_idx,
@@ -446,17 +536,12 @@ class SpecExecClient:
             )
             await asyncio.sleep(0.00001)
 
-            if self._proactive_client is not None:
-                (
-                    root_leaf_idx,
-                    root_token_id,
-                    proactive_tree_prefix_len,
-                    proactive_tree_end,
-                ) = self._proactive_client.draft()
+            proactive_result = await self._run_proactive_draft(target_result)
 
             selection, prefill_cnt = (
                 target_result.result() if target_result.done() else await target_result
             )
+            response_ms = (time.perf_counter() - request_start) * 1000
 
         with util.Timing(
             device=self._device, mode=self._target_time_mode
@@ -514,15 +599,17 @@ class SpecExecClient:
 
             if (
                 self._proactive_client is not None
-                and root_leaf_idx is not None  # type: ignore
-                and root_leaf_idx == last_accepted_token_idx  # type: ignore
-                and extra_token_id == root_token_id  # type: ignore
+                and proactive_result.root_leaf_idx is not None
+                and proactive_result.tree_prefix_len is not None
+                and proactive_result.tree_end is not None
+                and proactive_result.root_leaf_idx == last_accepted_token_idx
+                and extra_token_id == proactive_result.root_token_id
             ):
                 self._proactive_draft = True
                 self._reorder_by_sequence_proactive(
                     best_seq_mask,
-                    proactive_tree_prefix_len,  # type: ignore
-                    proactive_tree_end,  # type: ignore
+                    proactive_result.tree_prefix_len,
+                    proactive_result.tree_end,
                 )
             else:
                 self._proactive_draft = False
@@ -542,6 +629,30 @@ class SpecExecClient:
                 [fresh_token_ids, extra_token_id], dim=-1
             ).unsqueeze(0)
 
+        if self._adaptive_policy is not None:
+            self._adaptive_policy.observe_cycle(
+                response_ms=response_ms,
+                aligned=self._proactive_draft,
+                proactive_executed=(
+                    proactive_result.root_leaf_idx is not None
+                ),
+            )
+
+        proactive_execution = {
+            "mode": self._proactive_mode,
+            "planned_depth": proactive_result.planned_depth,
+            "executed_depth": proactive_result.executed_depth,
+            "elapsed_ms": proactive_result.elapsed_ms,
+            "response_ms": response_ms,
+            "stopped_by_response": proactive_result.stopped_by_response,
+            "skipped_reason": proactive_result.skipped_reason,
+            "policy_reason": proactive_result.policy_reason,
+        }
+        if self._adaptive_policy is not None:
+            proactive_execution["controller"] = (
+                self._adaptive_policy.stats()
+            )
+
         stats = {
             "preprocess_t": preprocess_t.elapsed,
             "wait_t": wait_t.elapsed,
@@ -552,6 +663,7 @@ class SpecExecClient:
             if self._proactive_client
             else False,
             "proactive": self._proactive_draft if self._proactive_client else False,
+            "proactive_execution": proactive_execution,
         }
 
         return fresh_token_ids, stats

@@ -18,4 +18,7 @@ config/*
 !config/server_only.example.yaml
 !config/specedge.example.yaml
 !config/specedge_4090_jetson.yaml
+!config/specedge_4090_jetson_adaptive.yaml
+!config/specedge_4090_jetson_interruptible.yaml
+!config/specedge_4090_jetson_no_proactive.yaml
 !config/server_only_4090.yaml

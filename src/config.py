@@ -38,6 +38,10 @@ class _ConfigMeta(type):
 
         return value
 
+    def _from_env_default(cls, key: str, default: str):
+        value = os.getenv(key)
+        return default if value is None or value == "null" else value
+
     def reset(cls):
         cls._initialized = False
         cls._initialize()
@@ -118,7 +122,33 @@ class SpecEdgeClientConfig(metaclass=_ConfigMeta):
             cls._from_env("SPECEDGE_PROACTIVE_MAX_BRANCH_WIDTH")
         )
         cls.proactive_max_budget = int(cls._from_env("SPECEDGE_PROACTIVE_MAX_BUDGET"))
-
+        cls.proactive_mode = cls._from_env_default(
+            "SPECEDGE_PROACTIVE_MODE", "baseline"
+        )
+        cls.proactive_adaptive_ewma_alpha = float(
+            cls._from_env_default("SPECEDGE_PROACTIVE_ADAPTIVE_EWMA_ALPHA", "0.2")
+        )
+        cls.proactive_adaptive_min_alignment_rate = float(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_ADAPTIVE_MIN_ALIGNMENT_RATE", "0.1"
+            )
+        )
+        cls.proactive_adaptive_warmup_cycles = int(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_ADAPTIVE_WARMUP_CYCLES", "4"
+            )
+        )
+        cls.proactive_adaptive_exploration_interval = int(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_ADAPTIVE_EXPLORATION_INTERVAL", "8"
+            )
+        )
+        cls.proactive_adaptive_safety_margin_ms = float(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_ADAPTIVE_SAFETY_MARGIN_MS", "2.0"
+            )
+        )
+        
         # token generation configuration
         cls.max_new_tokens = int(cls._from_env("SPECEDGE_MAX_NEW_TOKENS"))
         cls.max_request_num = int(cls._from_env("SPECEDGE_MAX_REQUEST_NUM"))
