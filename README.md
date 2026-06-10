@@ -91,6 +91,11 @@ The `specedge.example.yaml` configuration file contains the following settings:
 - `max_n_beams`, `max_beam_len`, `max_branch_width`, `max_budget`: Speculative decoding parameters
 - `proactive`: Proactive edge drafting configuration
   - `type`: Proactive drafting mode (excluded/included)
+  - `mode`: Proactive execution policy
+    - `baseline`: Original implementation; always completes the configured depth
+    - `interruptible`: Checks for the server response between proactive layers
+    - `adaptive`: Uses response deadlines, per-layer latency models, uncertainty,
+      and alignment feedback to decide whether each proactive layer should start
   - `max_n_beams`, `max_beam_len`, `max_branch_width`, `max_budget`: Proactive drafting parameters
 - `max_new_tokens`: Maximum tokens to generate per request
 - `max_request_num`: Total requests to process (-1 for all)
@@ -108,6 +113,52 @@ Before running the metric script, you need to collect the JSONL files from both 
 . .venv/bin/activate
 python src/metric/specedge.py -d result/demo/specedge --gpu "A100-40" # A100 40GB
 python src/metric/specedge.py -d result/demo/specedge --gpu "A100-80" # A100 80GB
+```
+
+### Jetson + RTX 4090 Ablation
+
+The original configuration remains the baseline. The additional configurations
+change only the proactive policy and write to separate experiment directories:
+
+```bash
+# Original paper-code behavior
+./script/client_host.sh -f config/specedge_4090_jetson.yaml
+
+# No proactive drafting
+./script/client_host.sh -f config/specedge_4090_jetson_no_proactive.yaml
+
+# Stop after the current proactive layer when validation has returned
+./script/client_host.sh -f config/specedge_4090_jetson_interruptible.yaml
+
+# Interruptible execution plus online depth and alignment control
+./script/client_host.sh -f config/specedge_4090_jetson_adaptive.yaml
+```
+
+Client JSONL records keep the original `target.proactive` fields and add
+`target.proactive_execution`, including planned/executed depth, proactive and
+response latency, stop reason, per-layer wall/GPU time, deadline decisions, and
+adaptive-controller EWMAs.
+
+The adaptive controller records `response_received_ms` immediately after the
+gRPC response bytes arrive, plus separate decode and observation timestamps.
+Before setup and every proactive layer, it computes:
+
+```text
+remaining = conservative_response_deadline - request_elapsed
+predicted_cost = layer_mean + uncertainty_scale * layer_error
+```
+
+The next stage starts only when `predicted_cost + safety_margin <= remaining`.
+Each proactive depth has an independent latency and error EWMA.
+
+Compare completed runs with:
+
+```bash
+python src/metric/proactive.py -d \
+  result/4090_jetson/specedge \
+  result/4090_jetson/specedge_no_proactive \
+  result/4090_jetson/specedge_interruptible \
+  result/4090_jetson/specedge_adaptive
 ```
 
 ## Auto Batch

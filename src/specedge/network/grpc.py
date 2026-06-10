@@ -1,3 +1,5 @@
+import time
+from dataclasses import dataclass
 from typing import Optional
 
 import grpc.aio
@@ -5,6 +7,14 @@ import torch
 
 from specedge_grpc import specedge_pb2, specedge_pb2_grpc
 from util import decode, encode
+
+
+@dataclass
+class ValidationResponse:
+    selection: torch.Tensor
+    prefill: int
+    received_at: float
+    decoded_at: float
 
 
 class GrpcClientController:
@@ -50,10 +60,16 @@ class GrpcClientController:
         )
 
         resp = await self._stub.Validate(request)
-
-        return decode(
+        received_at = time.perf_counter()
+        selection = decode(
             resp.selection,
             device=self._device,
             dtype=torch.long,
             shape=input_ids.size(-1),
-        ), resp.prefill
+        )
+        return ValidationResponse(
+            selection=selection,
+            prefill=resp.prefill,
+            received_at=received_at,
+            decoded_at=time.perf_counter(),
+        )

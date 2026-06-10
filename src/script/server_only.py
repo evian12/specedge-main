@@ -5,7 +5,6 @@ import random
 from pathlib import Path
 
 import yaml
-from rich.progress import Progress
 
 import log
 import util
@@ -23,11 +22,12 @@ async def main():
     logger = log.get_logger()
     result_logger = log.get_result_logger()
 
-    logger.info("Starting SpecEdge edge server...")
+    logger.info("Starting SpecEdge server-only benchmark...")
+    util.set_seed(server_config.seed)
 
     logger.info("Initializing dataset %s...", client_config.dataset)
     dataset = util.load_dataset(
-        client_config.dataset, model_name=client_config.draft_model
+        client_config.dataset, model_name=server_config.target_model
     )
 
     dataset_indices = list(range(len(dataset)))[server_config.req_offset :]
@@ -54,10 +54,10 @@ async def main():
     )
 
     logger.info("Initializing tokenizer...")
-    _tokenizer = util.load_tokenizer(client_config.draft_model)
+    draft_tokenizer = util.load_tokenizer(client_config.draft_model)
     target_tokenizer = util.load_tokenizer(server_config.target_model)
-    _validate_tokenizer_compatibility(
-        _tokenizer,
+    util.validate_tokenizer_compatibility(
+        draft_tokenizer,
         target_tokenizer,
         dataset[: min(8, len(dataset))],
     )
@@ -111,7 +111,7 @@ async def main():
     logger.info("Initializing SpecEdge Edge-Verify...")
     edge_verify = SpecExecEdgeVerify(
         tree=tree,
-        eos_token=_tokenizer.eos_token_id,
+        eos_token=target_tokenizer.eos_token_id,
         draft_engine=draft_engine,
         target_engine=target_engine,
         req_manager=req_manager,
@@ -122,12 +122,10 @@ async def main():
 
     iter_idx = 0
 
-    with Progress() as progress:
-        task = progress.add_task("Benchmark", total=len(dataset_indices))
+    logger.info("Starting %s requests", len(dataset_indices))
+    if dataset_indices:
         while True:
             logger.debug("iter_idx=%s", iter_idx)
-
-            prev_progress = edge_draft._current_req_idx
 
             with util.Timing(device=client_config.device, mode="sync") as draft_t:
                 prefill_requests, exhausted = await edge_draft.draft(iter_idx)
@@ -135,7 +133,22 @@ async def main():
                 if exhausted:
                     break
 
-            progress.update(task, advance=edge_draft._current_req_idx - prev_progress)
+            first_request_num = edge_draft._current_req_idx - len(prefill_requests) + 1
+            prefill_batch_indices = {
+                batch_idx for _, batch_idx in prefill_requests
+            }
+            for request_offset, (_, batch_idx) in enumerate(prefill_requests):
+                req_status = req_manager.req_statuses[batch_idx]
+                if req_status is None:
+                    continue
+
+                logger.info(
+                    "Request %s/%s, req_idx: %s",
+                    first_request_num + request_offset,
+                    len(dataset_indices),
+                    req_status.req_idx,
+                )
+                logger.info("Generating sequence req_idx=%d", req_status.req_idx)
 
             with util.Timing(device=server_config.device, mode="sync") as target_t:
                 (
@@ -159,11 +172,37 @@ async def main():
                 )
 
                 active_req_statuses = list(req_manager.req_statuses)
+                active_prefix_lens = req_manager.initial_prefix_len.clone()
                 n_fresh_tokens = await edge_verify.edge_post_verify(
                     selection=selection,
                     batch_indices=batch_indices,
                     adjusted_seq_indices=adjusted_seq_indices,
                     original_seq_indices=original_seq_indices,
+                )
+
+            for batch_idx, req_status in enumerate(active_req_statuses):
+                if (
+                    req_status is None
+                    or req_manager.req_statuses[batch_idx] is not None
+                ):
+                    continue
+
+                sequence_len = int(tree.prefix_len[batch_idx].item())
+                sequence = tree.tokens[batch_idx, :sequence_len].tolist()
+                eos_token_id = target_tokenizer.eos_token_id
+                generated_start = int(active_prefix_lens[batch_idx].item())
+                if eos_token_id is not None:
+                    try:
+                        eos_idx = sequence.index(eos_token_id, generated_start)
+                        sequence = sequence[: eos_idx + 1]
+                    except ValueError:
+                        pass
+                logger.info(
+                    "Finished generating sequence req_idx=%d", req_status.req_idx
+                )
+                logger.info(
+                    "Generated sequence: \n%s",
+                    target_tokenizer.decode(sequence, skip_special_tokens=True),
                 )
 
             n_fresh_tokens = n_fresh_tokens.cpu().numpy()
@@ -184,23 +223,11 @@ async def main():
                             "end_to_end": round(target_t.elapsed, 4),
                         },
                         "num_accepted_tokens": int(n_fresh_tokens[batch_idx]),
-                        "prefill": len(prefill_requests),
+                        "prefill": int(batch_idx in prefill_batch_indices),
                     }
                 )
 
             iter_idx += 1
-
-
-def _validate_tokenizer_compatibility(draft_tokenizer, target_tokenizer, prompts):
-    for prompt_idx, prompt in enumerate(prompts):
-        draft_ids = draft_tokenizer.encode(prompt)
-        target_ids = target_tokenizer.encode(prompt)
-        if draft_ids != target_ids:
-            raise ValueError(
-                "Draft and target tokenizers produce different token IDs for "
-                f"prompt {prompt_idx}. Speculative decoding requires compatible "
-                "tokenizers; use models from the same tokenizer family."
-            )
 
 
 def _load_config(config_file: Path):

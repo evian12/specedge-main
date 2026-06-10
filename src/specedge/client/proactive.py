@@ -1,3 +1,7 @@
+import time
+from dataclasses import dataclass, field
+from typing import Any, Optional
+
 import numpy as np
 import torch
 
@@ -6,6 +10,110 @@ import util
 from config import SpecEdgeClientConfig as config
 from specedge.engine.graph import GraphEngine
 from specedge.tree import Tree
+
+
+@dataclass
+class ProactiveDraftResult:
+    root_leaf_idx: Optional[torch.Tensor] = None
+    root_token_id: Optional[torch.Tensor] = None
+    tree_prefix_len: Optional[int] = None
+    tree_end: Optional[int] = None
+    planned_depth: int = 0
+    executed_depth: int = 0
+    elapsed_ms: float = 0.0
+    stopped_by_response: bool = False
+    skipped_reason: Optional[str] = None
+    policy_reason: Optional[str] = None
+    setup_ms: Optional[float] = None
+    layer_wall_ms: list[float] = field(default_factory=list)
+    layer_gpu_ms: list[Optional[float]] = field(default_factory=list)
+    deadline_checks: list[dict[str, Any]] = field(default_factory=list)
+
+
+class ProactiveDraftSession:
+    def __init__(
+        self,
+        client: "SpecExecProactiveDraft",
+        planned_depth: int,
+    ) -> None:
+        self._client = client
+        self._tree = client._tree
+        self._planned_depth = planned_depth
+        self._prev_tree_end = self._tree.end
+        self._prev_tree_prefix_len = self._tree.prefix_len
+        self._start_time = time.perf_counter()
+        self._finished = False
+
+        self.result = ProactiveDraftResult(planned_depth=planned_depth)
+        best_token_idx, best_token_id = client._get_best_bonus_token_candidate()
+        self.result.root_leaf_idx = best_token_idx
+        self.result.root_token_id = best_token_id
+
+        if best_token_idx is None or best_token_id is None:
+            self.result.skipped_reason = "no_candidate"
+            self._finished = True
+            return
+
+        self._tree.prefix_len = self._tree.end
+        self._tree.add(
+            token_ids=best_token_id,
+            token_positions=self._tree.positions[best_token_idx] + 1,
+            parent_indices=torch.tensor([best_token_idx], device=client._device),
+            logprobs=torch.tensor(0.0, device=client._device),
+            token_status=self._tree.POST_CANDIDATE,
+        )
+
+    @property
+    def can_step(self) -> bool:
+        return (
+            not self._finished
+            and self.result.executed_depth < self._planned_depth
+        )
+
+    @torch.inference_mode()
+    def step(self) -> float:
+        if not self.can_step:
+            return 0.0
+
+        step_start = time.perf_counter()
+        idx = self.result.executed_depth
+        self._client._logger.debug(
+            "Growing tree proactively: %d / %d", idx + 1, self._planned_depth
+        )
+        logits, parent_indices, parent_scores, parent_positions = (
+            self._client._process_candidates()
+        )
+        token_ids, token_positions, parent_indices, beam_scores = (
+            self._client._get_next_beams(
+                logits, parent_indices, parent_positions, parent_scores
+            )
+        )
+
+        self.result.executed_depth += 1
+        if token_ids.size(-1) == 0:
+            self._finished = True
+        else:
+            self._tree.add(
+                token_ids=token_ids,
+                token_positions=token_positions,
+                parent_indices=parent_indices,
+                logprobs=beam_scores,
+                token_status=self._tree.POST_CANDIDATE,
+            )
+
+        return (time.perf_counter() - step_start) * 1000
+
+    def finish(self, stopped_by_response: bool = False) -> ProactiveDraftResult:
+        self.result.stopped_by_response = stopped_by_response
+        if self.result.root_leaf_idx is not None:
+            self.result.tree_prefix_len = self._tree.prefix_len
+            self.result.tree_end = self._tree.end
+
+        self._tree.prefix_len = self._prev_tree_prefix_len
+        self._tree.end = self._prev_tree_end
+        self.result.elapsed_ms = (time.perf_counter() - self._start_time) * 1000
+        self._finished = True
+        return self.result
 
 
 class SpecExecProactiveDraft:
@@ -25,6 +133,11 @@ class SpecExecProactiveDraft:
 
         # FIXME: remove hard-coded value
         self._max_len = max_len
+        self._last_result: Optional[ProactiveDraftResult] = None
+
+    @property
+    def last_result(self) -> Optional[ProactiveDraftResult]:
+        return self._last_result
 
     @torch.inference_mode()
     def draft(self):
@@ -32,59 +145,23 @@ class SpecExecProactiveDraft:
         Expand tree from the best bonus token candidate.
         """
 
-        best_token_idx, best_token_id = self._get_best_bonus_token_candidate()
-
-        if best_token_idx is None or best_token_id is None:
-            self._logger.debug("No candidate token found.")
-            return None, None, None, None
-
-        prev_tree_end = self._tree.end
-        prev_tree_prefix_len = self._tree.prefix_len
-
-        self._tree.prefix_len = self._tree.end
-
-        # add best candidate token to tree
-        self._tree.add(
-            token_ids=best_token_id,
-            token_positions=self._tree.positions[best_token_idx] + 1,
-            parent_indices=torch.tensor([best_token_idx], device=self._device),
-            logprobs=torch.tensor(0.0, device=self._device),
-            token_status=self._tree.POST_CANDIDATE,
+        session = self.start_session(self._max_beam_len)
+        while session.can_step:
+            session.step()
+        result = session.finish()
+        self._last_result = result
+        return (
+            result.root_leaf_idx,
+            result.root_token_id,
+            result.tree_prefix_len,
+            result.tree_end,
         )
 
-        # grow tree from the best bonus token candidate
-        for idx in range(self._max_beam_len):
-            self._logger.debug(
-                "Growing tree proactively: %d / %d", idx + 1, self._max_beam_len
-            )
-            logits, parent_indices, parent_scores, parent_positions = (
-                self._process_candidates()
-            )
-
-            token_ids, token_positions, parent_indices, beam_scores = (
-                self._get_next_beams(
-                    logits, parent_indices, parent_positions, parent_scores
-                )
-            )
-
-            if token_ids.size(-1) == 0:
-                break
-
-            self._tree.add(
-                token_ids=token_ids,
-                token_positions=token_positions,
-                parent_indices=parent_indices,
-                logprobs=beam_scores,
-                token_status=self._tree.POST_CANDIDATE,
-            )
-
-        prefix_len = self._tree.prefix_len
-        tree_end = self._tree.end
-
-        self._tree.prefix_len = prev_tree_prefix_len
-        self._tree.end = prev_tree_end
-
-        return best_token_idx, best_token_id, prefix_len, tree_end
+    def start_session(self, max_depth: int) -> ProactiveDraftSession:
+        return ProactiveDraftSession(
+            client=self,
+            planned_depth=min(self._max_beam_len, max(0, max_depth)),
+        )
 
     def _get_best_bonus_token_candidate(self):
         """

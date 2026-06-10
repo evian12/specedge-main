@@ -37,10 +37,16 @@ async def main():
 
     logger.info("Initializing tokenizer %s", config.draft_model)
     tokenizer = util.load_tokenizer(config.draft_model)
+    target_tokenizer = util.load_tokenizer(config.target_model)
 
     logger.info("Initializing dataset %s", config.dataset)
     dataset = util.load_dataset(
-        config.dataset, model_name=config.draft_model, reasoning=config.reasoning
+        config.dataset, model_name=config.target_model, reasoning=config.reasoning
+    )
+    util.validate_tokenizer_compatibility(
+        tokenizer,
+        target_tokenizer,
+        dataset[: min(8, len(dataset))],
     )
 
     max_req_num = (

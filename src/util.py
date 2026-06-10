@@ -69,6 +69,24 @@ def load_tokenizer(name: str):
     return tokenizer
 
 
+def validate_tokenizer_compatibility(draft_tokenizer, target_tokenizer, prompts):
+    if draft_tokenizer.eos_token_id != target_tokenizer.eos_token_id:
+        raise ValueError(
+            "Draft and target tokenizers use different EOS token IDs. "
+            "Speculative decoding requires compatible tokenizers."
+        )
+
+    for prompt_idx, prompt in enumerate(prompts):
+        draft_ids = draft_tokenizer.encode(prompt)
+        target_ids = target_tokenizer.encode(prompt)
+        if draft_ids != target_ids:
+            raise ValueError(
+                "Draft and target tokenizers produce different token IDs for "
+                f"prompt {prompt_idx}. Speculative decoding requires compatible "
+                "tokenizers; use models from the same tokenizer family."
+            )
+
+
 def load_dataset(
     name: str, model_name: str | None = None, reasoning: bool | None = False
 ):

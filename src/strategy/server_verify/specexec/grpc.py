@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import multiprocessing as mp
 import os
 import queue
@@ -287,7 +288,9 @@ class InferenceController:
         if xdg_cache_home is None:
             xdg_cache_home = os.path.join(os.path.expanduser("~"), ".cache")
 
-        cache_folder_name = f"{config.target_model}_{config.dataset}"
+        model_name = Path(config.target_model).name
+        model_key = hashlib.sha256(config.target_model.encode()).hexdigest()[:12]
+        cache_folder_name = f"{model_name}-{model_key}_{config.dataset}"
         cache_dir = Path(xdg_cache_home) / "specedge" / cache_folder_name
 
         kv_prefill_offloading: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
