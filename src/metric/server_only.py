@@ -113,10 +113,7 @@ def overall_analysis(df: pl.DataFrame):
             ),
         },
         "tokens": {
-            "generated": df.filter(pl.col("prefill") == 0)
-            .select("num_accepted_tokens")
-            .sum()
-            .item(),
+            "generated": df.select("num_accepted_tokens").sum().item(),
             "accepted": (
                 df.select("num_accepted_tokens").mean().item(),
                 df.select("num_accepted_tokens").std().item(),
@@ -145,10 +142,9 @@ def overall_analysis(df: pl.DataFrame):
             .item()
         },
         "throughput": (
-            df.filter(pl.col("prefill") == 0).select("num_accepted_tokens").sum().item()
+            df.select("num_accepted_tokens").sum().item()
             / (
-                df.filter(pl.col("prefill") == 0)
-                .group_by("server_iter_idx")
+                df.group_by("server_iter_idx")
                 .agg(
                     pl.first("draft.end_to_end").alias("draft_end_to_end"),
                     pl.first("target.end_to_end").alias("target_end_to_end"),
@@ -161,8 +157,7 @@ def overall_analysis(df: pl.DataFrame):
         ),
         "cost": {
             "server": (
-                df.filter(pl.col("prefill") == 0)
-                .group_by("server_iter_idx")
+                df.group_by("server_iter_idx")
                 .agg(
                     pl.first("draft.end_to_end").alias("draft_end_to_end"),
                     pl.first("target.end_to_end").alias("target_end_to_end"),
@@ -175,10 +170,9 @@ def overall_analysis(df: pl.DataFrame):
             / 1000,
         },
         "cost_efficiency": (
-            df.filter(pl.col("prefill") == 0).select("num_accepted_tokens").sum().item()
+            df.select("num_accepted_tokens").sum().item()
             / (
-                df.filter(pl.col("prefill") == 0)
-                .group_by("server_iter_idx")
+                df.group_by("server_iter_idx")
                 .agg(
                     pl.first("draft.end_to_end").alias("draft_end_to_end"),
                     pl.first("target.end_to_end").alias("target_end_to_end"),

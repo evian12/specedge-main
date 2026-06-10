@@ -316,7 +316,7 @@ def main(config_path: Path, request_index: int, precision_check: bool):
 
     dataset = util.load_dataset(
         config["client"]["dataset"],
-        model_name=draft_name,
+        model_name=target_name,
     )
     prompt = dataset[request_index]
 

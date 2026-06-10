@@ -124,6 +124,7 @@ class SpecExecEdgeVerify:
         original_seq_indices: torch.Tensor,
     ):
         selection = selection.to(self._device)
+        previous_prefix_len = self._tree.prefix_len.clone()
         draft_choices = torch.ones(
             (self._max_batch_size, self._max_budget + 1),
             dtype=torch.long,
@@ -209,9 +210,6 @@ class SpecExecEdgeVerify:
                 dim=-1,
             )
 
-            n_fresh_tokens = torch.clamp_min(
-                crit.values - (self._tree.prefix_len - 1) + 1, min=1
-            )
             max_pos_indices = torch.where(
                 crit.values != -1,
                 accepted_seq_indices[crit.indices],
@@ -219,7 +217,6 @@ class SpecExecEdgeVerify:
             )
         else:
             max_pos_indices = self._tree.prefix_len - 1
-            n_fresh_tokens = torch.ones_like(max_pos_indices, device=self._device)
 
         src_masks = self._tree.amask[raw_batch_indices, 0, max_pos_indices, :].to(
             torch.bool
@@ -230,7 +227,7 @@ class SpecExecEdgeVerify:
 
         eos_flag = bonus_token_ids == self._eos_token
         eos_flag |= (
-            self._tree.tokens[raw_batch_indices] & src_masks == self._eos_token
+            (self._tree.tokens[raw_batch_indices] == self._eos_token) & src_masks
         ).any(dim=-1)
 
         for b_idx in range(self._max_batch_size):
@@ -255,7 +252,32 @@ class SpecExecEdgeVerify:
             logprobs=bonus_token_logprobs,
         )
 
-        self._tree.prefix_len.copy_(self._tree.end)
+        active_mask = self._req_manager.initial_prefix_len != 0
+        final_end = torch.where(
+            active_mask,
+            torch.minimum(
+                self._tree.end,
+                self._req_manager.initial_prefix_len + self._max_new_tokens,
+            ),
+            self._tree.end,
+        )
+
+        for batch_idx in torch.where(active_mask & eos_flag)[0].tolist():
+            start = int(previous_prefix_len[batch_idx].item())
+            end = int(final_end[batch_idx].item())
+            eos_positions = torch.where(
+                self._tree.tokens[batch_idx, start:end] == self._eos_token
+            )[0]
+            if eos_positions.numel() > 0:
+                final_end[batch_idx] = start + eos_positions[0] + 1
+
+        self._tree.end.copy_(final_end)
+        self._tree.prefix_len.copy_(final_end)
+        n_fresh_tokens = torch.where(
+            active_mask,
+            torch.clamp_min(final_end - previous_prefix_len, 0),
+            torch.zeros_like(final_end),
+        )
         self._remove_request(eos_flag)
 
         return n_fresh_tokens

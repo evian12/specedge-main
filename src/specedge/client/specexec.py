@@ -96,22 +96,37 @@ class SpecExecClient:
 
         # Prefill phase
         self._logger.debug("Prefill phase: req_idx=%d, step_idx=%d", req_idx, step_idx)
-        warmup_tokens = await self._cycle(req_idx, step_idx, prefill=True)
+        warmup_tokens = await self._cycle(
+            req_idx,
+            step_idx,
+            prefill=True,
+            max_fresh_tokens=self._max_new_tokens,
+        )
         self._prefix_tokens = torch.cat([self._prefix_tokens, warmup_tokens], dim=-1)
 
         step_idx = 1
-        eos_flag = False
+        eos_flag = bool(
+            (warmup_tokens == self._tokenizer.eos_token_id).any().item()
+        )
 
         # speculative decoding phase
         while (
             self._prefix_tokens.numel()
-            < self._max_new_tokens + self._num_original_tokens + warmup_tokens.numel()
+            < self._max_new_tokens + self._num_original_tokens
             and not eos_flag
         ):
             self._logger.debug(
                 "Speculative Decoding phase: req_idx=%d, step_idx=%d", req_idx, step_idx
             )
-            fresh_tokens = await self._cycle(req_idx, step_idx)
+            remaining_tokens = (
+                self._max_new_tokens
+                - (self._prefix_tokens.numel() - self._num_original_tokens)
+            )
+            fresh_tokens = await self._cycle(
+                req_idx,
+                step_idx,
+                max_fresh_tokens=remaining_tokens,
+            )
 
             eos_positions = (fresh_tokens == self._tokenizer.eos_token_id).nonzero()
             if eos_positions.numel() > 0:
@@ -133,13 +148,27 @@ class SpecExecClient:
             self._tokenizer.decode(self._prefix_tokens[0], skip_special_tokens=True),
         )
 
-    async def _cycle(self, req_idx: int, step_idx: int, prefill=False) -> torch.Tensor:
+    async def _cycle(
+        self,
+        req_idx: int,
+        step_idx: int,
+        prefill=False,
+        max_fresh_tokens: Optional[int] = None,
+    ) -> torch.Tensor:
         with util.Timing(device=self._device, mode="sync") as draft_t:
             draft_stats = self._grow_tree(prefill)
 
         with util.Timing(device=self._device, mode="sync") as target_t:
             fresh_token_ids, target_stats = await self._validate_tree(req_idx, prefill)
 
+        if max_fresh_tokens is not None:
+            fresh_token_ids = fresh_token_ids[:max_fresh_tokens]
+
+        eos_positions = (fresh_token_ids == self._tokenizer.eos_token_id).nonzero()
+        if eos_positions.numel() > 0:
+            fresh_token_ids = fresh_token_ids[: eos_positions[0, 0].item() + 1]
+
+        target_stats["num_accepted_tokens"] = fresh_token_ids.numel()
         self._result_logger.log(
             {
                 "client_idx": self._client_idx,

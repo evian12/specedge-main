@@ -38,6 +38,7 @@ def main(config_file: str):
     host = config["client"]["host"]
     base_process_name = config["client"]["process_name"]
     draft_model = config["client"]["draft_model"]
+    target_model = config["server"]["target_model"]
     dataset = config["client"]["dataset"]
     max_n_beams = config["client"]["max_n_beams"]
     max_beam_len = config["client"]["max_beam_len"]
@@ -48,6 +49,7 @@ def main(config_file: str):
     reasoning = config["client"]["reasoning"]
 
     logger.debug("draft_model: %s", draft_model)
+    logger.debug("target_model: %s", target_model)
     logger.debug("dataset: %s", dataset)
     logger.debug("max_n_beams: %s", max_n_beams)
     logger.debug("max_beam_len: %s", max_beam_len)
@@ -92,6 +94,7 @@ def main(config_file: str):
                 "SPECEDGE_SEED": seed,
                 "SPECEDGE_MAX_LEN": max_len,
                 "SPECEDGE_DRAFT_MODEL": draft_model,
+                "SPECEDGE_TARGET_MODEL": target_model,
                 "SPECEDGE_DEVICE": device,
                 "SPECEDGE_DTYPE": dtype,
                 "SPECEDGE_DATASET": dataset,

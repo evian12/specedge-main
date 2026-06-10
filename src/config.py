@@ -94,6 +94,7 @@ class SpecEdgeClientConfig(metaclass=_ConfigMeta):
 
         # model configuration
         cls.draft_model = cls._from_env("SPECEDGE_DRAFT_MODEL")
+        cls.target_model = cls._from_env("SPECEDGE_TARGET_MODEL")
         cls.device = torch.device(cls._from_env("SPECEDGE_DEVICE"))
         cls.dtype = util.convert_dtype(cls._from_env("SPECEDGE_DTYPE"))
         cls.reasoning = cls._from_env("SPECEDGE_REASONING") == "True"
