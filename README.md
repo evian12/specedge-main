@@ -47,10 +47,10 @@ Before running, ensure that SSH communication is established between the node ex
 
 ```bash
 # server
-./script/batch_server.sh -f config/specedge.example.yaml
+./script/batch_server.sh -f config/specedge_4090_jetson.yaml
 
 # edge
-./script/client_host.sh -f config/specedge.example.yaml
+./script/client_host.sh -f config/specedge_4090_jetson.yaml
 ```
 
 ### Configuration
@@ -297,3 +297,5 @@ This speculative decoding approach is based on the SpecExec algorithm. For more 
   primaryClass= {cs.CL}
 }
 ```
+
+原始 SpecEdge 假设 edge draft 足够快，在 Jetson 等资源受限设备上固定 proactive drafting 会产生严重计算超支。本方法根据设备状态、网络延迟和历史命中率动态控制预计算，实现更广泛的异构边缘部署。
