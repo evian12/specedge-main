@@ -245,6 +245,43 @@ python src/metric/auto_batch.py -d result/demo/auto_batch --gpu "A100-40" # A100
 python src/metric/auto_batch.py -d result/demo/auto_batch --gpu "A100-80" # A100 80GB
 ```
 
+## Network Autoregressive
+
+This baseline models a conventional cloud LLM API for the one-client,
+one-server experiment. The edge sends each prompt once, the server performs
+ordinary token-by-token autoregressive decoding, and generated tokens are
+streamed back over the same gRPC request. Unlike `auto_batch`, its latency
+therefore includes prompt upload, server prefill/decode, and token delivery.
+
+Start the server on the RTX 4090:
+
+```bash
+./script/network_autoregressive_server.sh \
+  -f config/network_autoregressive_4090_jetson.yaml
+```
+
+Then start the client host on the RTX 4090. It creates a reverse SSH tunnel and
+runs the measurement client on the configured Jetson:
+
+```bash
+./script/network_autoregressive_client_host.sh \
+  -f config/network_autoregressive_4090_jetson.yaml
+```
+
+The client records TTFT, TPOT, request end-to-end latency, server prefill/decode
+time, and an estimated transport/scheduling overhead. Summarize the client log
+with:
+
+```bash
+python src/metric/network_autoregressive.py -d \
+  result/4090_jetson/network_autoregressive
+```
+
+Use the same dataset, request indices, generation length, target model, dtype,
+temperature, and prefill policy when comparing this baseline with SpecEdge.
+This implementation deliberately supports one client at a time so the first
+comparison isolates cloud-edge network latency from server queueing effects.
+
 ## Server-Only
 
 ### Usage
