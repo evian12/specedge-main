@@ -1,0 +1,14 @@
+seed: 42
+output_dir: data/distillation/specbench_pilot
+
+splits:
+  train: 0.8
+  validation: 0.1
+  test: 0.1
+
+sources:
+  - name: specbench_first_turn
+    path: data/raw/specbench_first_turn.jsonl
+    prompt_field: prompt
+    id_field: id
+    max_samples: -1

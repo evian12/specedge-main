@@ -148,6 +148,9 @@ change only the proactive policy and write to separate experiment directories:
 
 # LinUCB initial depth plus adaptive multi-leaf proactive drafting
 ./script/client_host.sh -f config/specedge_4090_jetson_bandit.yaml
+
+# Replace TinyLlama with AMD-Llama-135M while keeping the original tree settings
+./script/client_host.sh -f config/specedge_4090_jetson_amd135m.yaml
 ```
 
 Client JSONL records keep the original `target.proactive` fields and add
@@ -208,6 +211,154 @@ python src/metric/proactive.py -d \
   result/4090_jetson/specedge_deepest_multi \
   result/4090_jetson/specedge_bandit
 ```
+
+## Drafter Distillation
+
+The `src/distillation` subproject trains a draft model offline without changing
+the SpecEdge inference path. It supports general instruction prompts, business
+request history, and a bounded hard-example replay source. Generated datasets,
+teacher logits, and checkpoints are ignored by Git.
+
+完整中文复现教程（数据格式、SFT、KD、损失公式、拒绝回放、部署和实验矩阵）见
+[`docs/drafter_training_zh.md`](docs/drafter_training_zh.md)。服务器墙钟成本与 GPU
+活跃推理时间的区别见
+[`docs/cost_accounting_zh.md`](docs/cost_accounting_zh.md)。
+
+Canonical input JSONL accepts either:
+
+```json
+{"id":"1","prompt":"Explain speculative decoding."}
+{"request_id":"2","messages":[{"role":"user","content":"Summarize this."}]}
+```
+
+Build prompt-level train, validation, and test splits:
+
+```bash
+./script/distill_build_dataset.sh \
+  --config config/distillation/build_dataset.example.yaml
+```
+
+The split is assigned from a seeded hash of the complete prompt. Duplicate
+prompts cannot cross splits. Do not include the final SpecBench or business
+holdout test requests in any training source.
+
+First collect teacher responses and run supervised fine-tuning:
+
+```bash
+./script/distill_collect.sh \
+  --config config/distillation/collect_sft_amd135m.example.yaml
+./script/distill_collect.sh \
+  --config config/distillation/collect_sft_validation_amd135m.example.yaml
+./script/distill_train.sh \
+  --config config/distillation/train_sft_amd135m.example.yaml
+```
+
+Then generate on-policy continuations with the SFT student, score them with the
+target model, and train with sparse top-k logit distillation:
+
+```bash
+./script/distill_collect.sh \
+  --config config/distillation/collect_kd_amd135m.example.yaml
+./script/distill_collect.sh \
+  --config config/distillation/collect_kd_validation_amd135m.example.yaml
+./script/distill_train.sh \
+  --config config/distillation/train_kd_amd135m.example.yaml
+```
+
+The KD records store teacher top-k probabilities plus aggregate tail
+probability instead of the complete vocabulary logits. Evaluate an untouched
+validation or test set with:
+
+```bash
+./script/distill_evaluate.sh \
+  --config config/distillation/evaluate_amd135m.example.yaml
+```
+
+The evaluator reports target/student top-1 agreement, target top-1 coverage in
+the student top-k, student cross-entropy, and a greedy acceptance-depth proxy.
+Actual SpecEdge throughput remains the final metric. To use a trained model in
+the future, create a separate inference configuration whose `draft_model`
+points at the selected checkpoint; no inference configuration is changed by
+the distillation tools.
+
+### Rejection Replay
+
+The next acceptance-depth round can replay only the selected drafter's errors
+on teacher-generated trajectories:
+
+```bash
+./script/distill_rejection_replay.sh
+```
+
+`loss_mask.mode: student_rejections` compares the current student's greedy
+token with the teacher Top-1 token at every response position. The generated
+KD record activates only confident disagreement positions; `window_size` can
+also include a small number of valid teacher-trajectory states immediately
+after each error. This differs from ordinary rejection weighting: easy tokens
+do not enter the replay loss at all.
+
+The replay training configuration mixes those hard records with the original
+multi-domain KD data and adds a Top-1 margin loss:
+
+```text
+teacher logit >= strongest alternative logit + margin
+```
+
+Both features are opt-in. Existing SFT, KD, acceptance-KD, and SpecEdge
+inference configurations preserve their previous behavior.
+
+An optional second round weights each rejection by its estimated improvement
+to capped mean acceptance depth:
+
+```bash
+./script/distill_rejection_replay_gain.sh
+```
+
+For each wrong token, the collector temporarily treats that token as corrected
+and recomputes the sum of contiguous accepted depths, capped at the configured
+verification depth. Errors that bridge two otherwise-correct runs receive
+more weight than isolated errors. The logarithmic, capped weight avoids a few
+long examples dominating training.
+
+The selected replay checkpoint and a separate deployment configuration are
+documented in
+[`docs/acceptance_depth_experiment.md`](docs/acceptance_depth_experiment.md)
+and
+`config/specedge_4090_jetson_sequence_depth_replay.yaml`. The original
+sequence-depth and baseline configurations are unchanged.
+
+## Sequence-Depth Proactive Drafting
+
+`sequence_depth` keeps the original proactive policies as baselines while
+adding a single-sequence alternative:
+
+```bash
+./script/client_host.sh \
+  -f config/specedge_4090_jetson_sequence_depth.yaml
+```
+
+Set `initial_draft.structure: sequence` to generate one greedy draft path. The
+configured `sequence.acceptance_survival` contains offline
+`P(accepted depth >= d)` values beginning with depth zero. The client converts
+them to exact stopping probabilities and allocates `max_roots` bonus candidates
+across every possible stopping depth. Candidates at the same proactive layer
+are evaluated in one draft-model batch, while different proactive layers
+remain sequential and are guarded by the adaptive validation deadline.
+
+Every selected `(stop depth, bonus token)` pair starts one greedy proactive
+continuation. When validation matches a pair, only that continuation is kept.
+The following cycle generates:
+
+```text
+max(0, selected initial depth - actually reused proactive depth)
+```
+
+new draft layers. The actual completed depth is used because validation may
+interrupt proactive generation before its configured maximum.
+
+The acceptance-depth distillation experiment, anti-overfitting protocol, and
+RTX 4090 results are documented in
+[`docs/acceptance_depth_experiment.md`](docs/acceptance_depth_experiment.md).
 
 ## Auto Batch
 

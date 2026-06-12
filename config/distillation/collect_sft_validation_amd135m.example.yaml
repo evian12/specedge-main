@@ -1,0 +1,18 @@
+mode: sft
+seed: 43
+input_path: data/distillation/mixture/validation.jsonl
+output_path: data/distillation/amd135m/sft_validation.jsonl
+teacher_model: /home/yypan/models/Llama-2-7b-chat-hf
+device: cuda:0
+dtype: fp16
+apply_chat_template: true
+allow_test_input: false
+max_samples: -1
+
+generation:
+  source: teacher
+  reuse_response: false
+  max_prompt_tokens: 1536
+  max_new_tokens: 256
+  temperature: 0.7
+  top_p: 0.9

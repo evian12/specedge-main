@@ -1,0 +1,11 @@
+seed: 42
+input_path: data/distillation/specbench_pilot/sft_validation.jsonl
+output_path: result/distillation/specbench_pilot/acceptance_kd_alignment.json
+teacher_model: /home/yypan/models/Llama-2-7b-chat-hf
+student_model: checkpoints/AMD-Llama-135m-specbench-pilot-acceptance-kd/best
+device: cuda:0
+dtype: fp16
+max_seq_len: 512
+max_samples: -1
+student_top_k: 8
+max_accept_depth: 7

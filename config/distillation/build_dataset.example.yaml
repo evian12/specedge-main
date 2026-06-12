@@ -1,0 +1,29 @@
+seed: 42
+output_dir: data/distillation/mixture
+
+splits:
+  train: 0.8
+  validation: 0.1
+  test: 0.1
+
+# Every source is canonicalized to either {"prompt": ...} or
+# {"messages": [...]}. Add independent public, business, and hard-example
+# sources here. Never point a training source at the final benchmark test set.
+sources:
+  - name: general_instruction
+    path: data/raw/general_instruction.jsonl
+    prompt_field: prompt
+    id_field: id
+    max_samples: -1
+
+  - name: business_history
+    path: data/raw/business_history.jsonl
+    messages_field: messages
+    id_field: request_id
+    max_samples: -1
+
+  - name: hard_prefix_replay
+    path: data/raw/hard_prefixes.jsonl
+    prompt_field: prompt
+    id_field: trace_id
+    max_samples: 10000

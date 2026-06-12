@@ -132,6 +132,20 @@ def summarize(data_dir: Path) -> dict[str, Any]:
                 if detail.get("root_count") is not None
             ]
         ),
+        "matched_stop_depth": _mean(
+            [
+                float(detail["matched_stop_depth"])
+                for detail in details
+                if detail.get("matched_stop_depth") is not None
+            ]
+        ),
+        "reused_proactive_depth": _mean(
+            [
+                float(detail["reused_proactive_depth"])
+                for detail in initial_drafts
+                if detail.get("reused_proactive_depth") is not None
+            ]
+        ),
         "proactive_node_count": _mean(
             [
                 float(detail["proactive_node_count"])
@@ -255,6 +269,8 @@ def main() -> None:
         "leaves",
         "selected",
         "roots",
+        "stop",
+        "reuse",
         "nodes",
         "waste",
         "batch",
@@ -289,6 +305,8 @@ def main() -> None:
                 _format(summary["deepest_leaf_count"]),
                 _format(summary["selected_leaf_count"]),
                 _format(summary["root_count"]),
+                _format(summary["matched_stop_depth"]),
+                _format(summary["reused_proactive_depth"]),
                 _format(summary["proactive_node_count"]),
                 _format(summary["wasted_node_count"]),
                 _format(summary["layer_batch_width"]),

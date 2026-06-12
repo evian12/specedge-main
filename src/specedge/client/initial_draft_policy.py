@@ -6,6 +6,28 @@ import numpy as np
 from specedge.client.proactive_policy import EwmaEstimate
 
 
+def initial_depth_after_proactive_reuse(
+    selected_depth: int,
+    *,
+    proactive_hit: bool,
+    reused_depth: int,
+    proactive_type: str,
+    path_policy: str,
+) -> tuple[int, int]:
+    """Return new draft layers and the number of reused proactive layers."""
+    selected_depth = max(0, selected_depth)
+    should_reuse = proactive_hit and (
+        proactive_type == "included"
+        or path_policy == "sequence_depth"
+    )
+    actual_reuse = (
+        min(selected_depth, max(0, reused_depth))
+        if should_reuse
+        else 0
+    )
+    return selected_depth - actual_reuse, actual_reuse
+
+
 @dataclass
 class InitialDraftDecision:
     depth: int

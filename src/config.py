@@ -117,6 +117,9 @@ class SpecEdgeClientConfig(metaclass=_ConfigMeta):
         cls.initial_draft_mode = cls._from_env_default(
             "SPECEDGE_INITIAL_DRAFT_MODE", "fixed"
         )
+        cls.initial_draft_structure = cls._from_env_default(
+            "SPECEDGE_INITIAL_DRAFT_STRUCTURE", "tree"
+        )
         cls.initial_draft_candidate_depths = [
             int(value)
             for value in json.loads(
@@ -218,6 +221,42 @@ class SpecEdgeClientConfig(metaclass=_ConfigMeta):
             for value in json.loads(
                 cls._from_env_default(
                     "SPECEDGE_PROACTIVE_MULTI_DEPTH_PROBABILITY_COVERAGE",
+                    "[1.0, 0.8, 0.5]",
+                )
+            )
+        ]
+        cls.proactive_sequence_acceptance_survival = [
+            float(value)
+            for value in json.loads(
+                cls._from_env_default(
+                    "SPECEDGE_PROACTIVE_SEQUENCE_ACCEPTANCE_SURVIVAL",
+                    "[1.0, 0.5, 0.3, 0.2, 0.1]",
+                )
+            )
+        ]
+        cls.proactive_sequence_max_bonus_per_depth = int(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_SEQUENCE_MAX_BONUS_PER_DEPTH",
+                "4",
+            )
+        )
+        cls.proactive_sequence_max_roots = int(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_SEQUENCE_MAX_ROOTS",
+                "8",
+            )
+        )
+        cls.proactive_sequence_min_root_probability = float(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_SEQUENCE_MIN_ROOT_PROBABILITY",
+                "0.0",
+            )
+        )
+        cls.proactive_sequence_depth_probability_coverage = [
+            float(value)
+            for value in json.loads(
+                cls._from_env_default(
+                    "SPECEDGE_PROACTIVE_SEQUENCE_DEPTH_PROBABILITY_COVERAGE",
                     "[1.0, 0.8, 0.5]",
                 )
             )

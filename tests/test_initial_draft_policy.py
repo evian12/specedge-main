@@ -3,6 +3,7 @@ import unittest
 from specedge.client.initial_draft_policy import (
     InitialDraftDecision,
     LinUCBInitialDraftPolicy,
+    initial_depth_after_proactive_reuse,
 )
 
 
@@ -113,6 +114,30 @@ class LinUCBInitialDraftPolicyTest(unittest.TestCase):
 
         self.assertEqual(reward, 20.0)
         self.assertEqual(policy.counts[decision.depth], 1)
+
+    def test_sequence_depth_subtracts_actual_reused_layers(self):
+        remaining, reused = initial_depth_after_proactive_reuse(
+            6,
+            proactive_hit=True,
+            reused_depth=2,
+            proactive_type="excluded",
+            path_policy="sequence_depth",
+        )
+
+        self.assertEqual(remaining, 4)
+        self.assertEqual(reused, 2)
+
+    def test_reuse_is_capped_by_selected_depth(self):
+        remaining, reused = initial_depth_after_proactive_reuse(
+            3,
+            proactive_hit=True,
+            reused_depth=5,
+            proactive_type="included",
+            path_policy="deepest_multi",
+        )
+
+        self.assertEqual(remaining, 0)
+        self.assertEqual(reused, 3)
 
 
 if __name__ == "__main__":

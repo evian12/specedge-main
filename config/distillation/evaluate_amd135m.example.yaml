@@ -1,0 +1,10 @@
+seed: 42
+input_path: data/distillation/amd135m/sft_validation.jsonl
+output_path: result/distillation/amd135m_alignment.json
+teacher_model: /home/yypan/models/Llama-2-7b-chat-hf
+student_model: checkpoints/AMD-Llama-135m-sft-kd/best
+device: cuda:0
+dtype: fp16
+max_seq_len: 2048
+max_samples: -1
+student_top_k: 8

@@ -47,6 +47,7 @@ def main(config_file: str):
     max_budget = config["client"]["max_budget"]
     initial_draft = config["client"].get("initial_draft", {})
     initial_draft_mode = initial_draft.get("mode", "fixed")
+    initial_draft_structure = initial_draft.get("structure", "tree")
     initial_draft_candidate_depths = initial_draft.get(
         "candidate_depths", [max_beam_len]
     )
@@ -111,6 +112,26 @@ def main(config_file: str):
     proactive_multi_depth_probability_coverage = proactive_multi.get(
         "depth_probability_coverage", [1.0, 0.8, 0.5]
     )
+    proactive_sequence = config["client"]["proactive"].get(
+        "sequence", {}
+    )
+    proactive_sequence_acceptance_survival = proactive_sequence.get(
+        "acceptance_survival", [1.0, 0.5, 0.3, 0.2, 0.1]
+    )
+    proactive_sequence_max_bonus_per_depth = proactive_sequence.get(
+        "max_bonus_per_depth", 4
+    )
+    proactive_sequence_max_roots = proactive_sequence.get(
+        "max_roots", 8
+    )
+    proactive_sequence_min_root_probability = proactive_sequence.get(
+        "min_root_probability", 0.0
+    )
+    proactive_sequence_depth_probability_coverage = (
+        proactive_sequence.get(
+            "depth_probability_coverage", [1.0, 0.8, 0.5]
+        )
+    )
     proactive_adaptive = config["client"]["proactive"].get("adaptive", {})
     proactive_adaptive_ewma_alpha = proactive_adaptive.get("ewma_alpha", 0.2)
     proactive_adaptive_min_alignment_rate = proactive_adaptive.get(
@@ -168,6 +189,9 @@ def main(config_file: str):
                 "SPECEDGE_MAX_BRANCH_WIDTH": max_branch_width,
                 "SPECEDGE_MAX_BUDGET": max_budget,
                 "SPECEDGE_INITIAL_DRAFT_MODE": initial_draft_mode,
+                "SPECEDGE_INITIAL_DRAFT_STRUCTURE": (
+                    initial_draft_structure
+                ),
                 "SPECEDGE_INITIAL_DRAFT_CANDIDATE_DEPTHS": json.dumps(
                     initial_draft_candidate_depths
                 ),
@@ -218,6 +242,21 @@ def main(config_file: str):
                 ),
                 "SPECEDGE_PROACTIVE_MULTI_DEPTH_PROBABILITY_COVERAGE": json.dumps(
                     proactive_multi_depth_probability_coverage
+                ),
+                "SPECEDGE_PROACTIVE_SEQUENCE_ACCEPTANCE_SURVIVAL": json.dumps(
+                    proactive_sequence_acceptance_survival
+                ),
+                "SPECEDGE_PROACTIVE_SEQUENCE_MAX_BONUS_PER_DEPTH": (
+                    proactive_sequence_max_bonus_per_depth
+                ),
+                "SPECEDGE_PROACTIVE_SEQUENCE_MAX_ROOTS": (
+                    proactive_sequence_max_roots
+                ),
+                "SPECEDGE_PROACTIVE_SEQUENCE_MIN_ROOT_PROBABILITY": (
+                    proactive_sequence_min_root_probability
+                ),
+                "SPECEDGE_PROACTIVE_SEQUENCE_DEPTH_PROBABILITY_COVERAGE": json.dumps(
+                    proactive_sequence_depth_probability_coverage
                 ),
                 "SPECEDGE_PROACTIVE_MAX_N_BEAMS": proactive_max_n_beams,
                 "SPECEDGE_PROACTIVE_MAX_BEAM_LEN": proactive_max_beam_len,

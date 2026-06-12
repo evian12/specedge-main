@@ -1,0 +1,65 @@
+version: 1
+opt: 2
+
+base:
+  result_path: "result/4090_jetson"
+  exp_name: "specedge_sequence_depth"
+  dtype: fp16
+  seed: 42
+  ssh_key: ~/.ssh/id_ed25519
+  max_len: 2048
+
+server:
+  process_name: server
+  target_model: /home/yypan/models/Llama-2-7b-chat-hf
+  device: cuda:0
+  temperature: 0.7
+  max_batch_size: 1
+  num_clients: 1
+  batch_type: static
+  cache_prefill: true
+
+client:
+  host: 127.0.0.1:18001
+  process_name: client
+  draft_model: /home/yypan/models/AMD-Llama-135m-specbench-pilot-sft
+  dataset: specbench
+  reasoning: false
+  sample_req_cnt: 8
+  req_offset: 0
+  max_n_beams: 1
+  max_beam_len: 4
+  max_branch_width: 1
+  max_budget: 8
+  initial_draft:
+    mode: fixed
+    structure: sequence
+  proactive:
+    type: included
+    mode: adaptive
+    path_policy: sequence_depth
+    max_n_beams: 8
+    max_beam_len: 3
+    max_branch_width: 1
+    max_budget: 24
+    sequence:
+      # Offline P(accepted depth >= d), indexed from depth 0.
+      acceptance_survival:
+        [1.0, 0.5413, 0.3180, 0.1992, 0.1371, 0.0966, 0.0710, 0.0539]
+      max_bonus_per_depth: 4
+      max_roots: 8
+      min_root_probability: 0.0
+      depth_probability_coverage: [1.0, 0.8, 0.5]
+    adaptive:
+      ewma_alpha: 0.2
+      min_alignment_rate: 0.1
+      warmup_cycles: 4
+      exploration_interval: 8
+      safety_margin_ms: 2.0
+      uncertainty_scale: 1.0
+  max_new_tokens: 64
+  max_request_num: -1
+
+node:
+  jetson:
+    - device: cuda:0

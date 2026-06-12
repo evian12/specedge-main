@@ -11,6 +11,7 @@ from config import SpecEdgeClientConfig as config
 from specedge.client.initial_draft_policy import (
     InitialDraftDecision,
     LinUCBInitialDraftPolicy,
+    initial_depth_after_proactive_reuse,
 )
 from specedge.client.proactive import (
     ProactiveDraftResult,
@@ -53,6 +54,7 @@ class SpecExecClient:
         self._max_branch_width = config.max_branch_width
         self._max_budget = config.max_budget
         self._initial_draft_mode = config.initial_draft_mode
+        self._initial_draft_structure = config.initial_draft_structure
 
         self._proactive_type = config.proactive_type
         self._proactive_mode = config.proactive_mode
@@ -87,6 +89,7 @@ class SpecExecClient:
         self._initial_draft_policy: Optional[LinUCBInitialDraftPolicy] = None
         self._previous_proactive_draft = False
         self._proactive_draft = False
+        self._reused_proactive_depth = 0
         if self._proactive_type != "disabled":
             self._proactive_client = SpecExecProactiveDraft(
                 tree=self._tree,
@@ -153,6 +156,11 @@ class SpecExecClient:
             raise ValueError(
                 f"Invalid initial_draft mode: {self._initial_draft_mode}"
             )
+        if self._initial_draft_structure not in ["tree", "sequence"]:
+            raise ValueError(
+                "Invalid initial_draft structure: "
+                f"{self._initial_draft_structure}"
+            )
         if self._proactive_type not in ["included", "excluded", "disabled"]:
             raise ValueError(f"Invalid proactive_type: {self._proactive_type}")
         if self._proactive_mode not in [
@@ -164,6 +172,7 @@ class SpecExecClient:
         if self._proactive_path_policy not in [
             "single_best",
             "deepest_multi",
+            "sequence_depth",
         ]:
             raise ValueError(
                 "Invalid proactive_path_policy: "
@@ -214,6 +223,61 @@ class SpecExecClient:
         ):
             raise ValueError(
                 "multi.depth_probability_coverage must be non-increasing"
+            )
+        survival = config.proactive_sequence_acceptance_survival
+        if not survival or abs(survival[0] - 1.0) > 1e-6:
+            raise ValueError(
+                "sequence.acceptance_survival must start with 1.0"
+            )
+        if any(not 0.0 <= probability <= 1.0 for probability in survival):
+            raise ValueError(
+                "sequence.acceptance_survival values must be in [0, 1]"
+            )
+        if any(
+            later > earlier
+            for earlier, later in zip(survival, survival[1:])
+        ):
+            raise ValueError(
+                "sequence.acceptance_survival must be non-increasing"
+            )
+        if config.proactive_sequence_max_bonus_per_depth <= 0:
+            raise ValueError(
+                "sequence.max_bonus_per_depth must be positive"
+            )
+        if config.proactive_sequence_max_roots <= 0:
+            raise ValueError("sequence.max_roots must be positive")
+        if (
+            config.proactive_sequence_max_roots
+            > config.proactive_max_budget
+        ):
+            raise ValueError(
+                "sequence.max_roots must not exceed proactive max_budget"
+            )
+        if config.proactive_sequence_min_root_probability < 0.0:
+            raise ValueError(
+                "sequence.min_root_probability must be non-negative"
+            )
+        sequence_coverage = (
+            config.proactive_sequence_depth_probability_coverage
+        )
+        if any(
+            not 0.0 <= coverage <= 1.0
+            for coverage in sequence_coverage
+        ):
+            raise ValueError(
+                "sequence.depth_probability_coverage values must be "
+                "in [0, 1]"
+            )
+        if any(
+            later > earlier
+            for earlier, later in zip(
+                sequence_coverage,
+                sequence_coverage[1:],
+            )
+        ):
+            raise ValueError(
+                "sequence.depth_probability_coverage must be "
+                "non-increasing"
             )
 
     async def _run_proactive_draft(
@@ -475,6 +539,7 @@ class SpecExecClient:
         cycle_ms = (time.perf_counter() - cycle_start) * 1000
         initial_draft_log = {
             "mode": self._initial_draft_mode,
+            "structure": self._initial_draft_structure,
             "selected_depth": selected_depth,
             "selection_reason": (
                 initial_draft_decision.reason
@@ -482,6 +547,9 @@ class SpecExecClient:
                 else ("prefill" if prefill else "fixed")
             ),
             "executed_depth": draft_stats["executed_depth"],
+            "reused_proactive_depth": draft_stats[
+                "reused_proactive_depth"
+            ],
             "node_count": draft_stats["node_count"],
             "accepted_draft_depth": max(
                 0, fresh_token_ids.numel() - 1
@@ -574,11 +642,15 @@ class SpecExecClient:
             if selected_depth is None
             else min(self._max_beam_len, max(0, selected_depth))
         )
-        if self._proactive_type == "included" and self._proactive_draft:
-            max_beam_len = max(
-                0,
-                max_beam_len - config.proactive_max_beam_len,
+        max_beam_len, reused_proactive_depth = (
+            initial_depth_after_proactive_reuse(
+                max_beam_len,
+                proactive_hit=self._proactive_draft,
+                reused_depth=self._reused_proactive_depth,
+                proactive_type=self._proactive_type,
+                path_policy=self._proactive_path_policy,
             )
+        )
 
         if torch.where(self._tree.status == self._tree.CANDIDATE)[0].numel() == 0:
             max_beam_len = 0
@@ -593,17 +665,30 @@ class SpecExecClient:
 
             draft_forward_times.append(draft_forward_t)
 
-            (
-                next_beam_ids,
-                next_beam_positions,
-                next_beam_indices,
-                beam_logprobs,
-            ) = self._get_next_beams(
-                logits=logits,
-                beam_indices=beam_indices,
-                beam_positions=beam_positions,
-                beam_scores=beam_scores,
-            )
+            if self._initial_draft_structure == "sequence":
+                (
+                    next_beam_ids,
+                    next_beam_positions,
+                    next_beam_indices,
+                    beam_logprobs,
+                ) = self._get_next_sequence(
+                    logits=logits,
+                    beam_indices=beam_indices,
+                    beam_positions=beam_positions,
+                    beam_scores=beam_scores,
+                )
+            else:
+                (
+                    next_beam_ids,
+                    next_beam_positions,
+                    next_beam_indices,
+                    beam_logprobs,
+                ) = self._get_next_beams(
+                    logits=logits,
+                    beam_indices=beam_indices,
+                    beam_positions=beam_positions,
+                    beam_scores=beam_scores,
+                )
 
             if next_beam_ids.numel() == 0:
                 self._logger.debug("No more beams to grow")
@@ -631,7 +716,27 @@ class SpecExecClient:
             "forward_t": draft_forward_times,
             "executed_depth": len(draft_forward_times),
             "node_count": self._tree.end - self._tree.prefix_len,
+            "reused_proactive_depth": reused_proactive_depth,
         }
+
+    def _get_next_sequence(
+        self,
+        logits: torch.Tensor,
+        beam_indices: torch.Tensor,
+        beam_positions: torch.Tensor,
+        beam_scores: torch.Tensor,
+    ):
+        """Choose one globally most likely continuation token."""
+        logprobs = torch.log_softmax(logits, dim=-1)
+        best_logprobs, best_token_ids = logprobs.max(dim=-1)
+        scores = beam_scores + np.log(0.9) + best_logprobs
+        best_beam_offset = scores.argmax()
+        return (
+            best_token_ids[best_beam_offset].view(1),
+            (beam_positions[best_beam_offset] + 1).view(1),
+            beam_indices[best_beam_offset].view(1),
+            scores[best_beam_offset].view(1),
+        )
 
     def _process_candidates(self, warmup: bool):
         self._logger.debug("Processing candidates")
@@ -946,6 +1051,9 @@ class SpecExecClient:
                 and proactive_result.tree_end is not None
             ):
                 self._proactive_draft = True
+                self._reused_proactive_depth = (
+                    matched_root.executed_depth
+                )
                 if self._proactive_path_policy == "single_best":
                     self._reorder_by_sequence_proactive(
                         best_seq_mask,
@@ -959,6 +1067,7 @@ class SpecExecClient:
                     )
             else:
                 self._proactive_draft = False
+                self._reused_proactive_depth = 0
                 self._reorder_by_sequence(best_seq_mask)
                 self._tree.add(
                     token_ids=extra_token_id,
@@ -1003,6 +1112,12 @@ class SpecExecClient:
             "max_leaf_depth": proactive_result.max_leaf_depth,
             "deepest_leaf_count": proactive_result.deepest_leaf_count,
             "selected_leaf_count": proactive_result.selected_leaf_count,
+            "sequence_path_depth": (
+                proactive_result.sequence_path_depth
+            ),
+            "sequence_stop_probabilities": (
+                proactive_result.sequence_stop_probabilities
+            ),
             "root_count": len(proactive_result.roots),
             "roots": [
                 root.as_dict() for root in proactive_result.roots
@@ -1022,6 +1137,16 @@ class SpecExecClient:
             ),
             "matched_root_id": (
                 matched_root.root_id if matched_root is not None else None
+            ),
+            "matched_stop_depth": (
+                matched_root.stop_depth
+                if matched_root is not None
+                else None
+            ),
+            "matched_reused_depth": (
+                matched_root.executed_depth
+                if matched_root is not None
+                else 0
             ),
             "proactive_node_count": sum(
                 len(root.node_indices) for root in proactive_result.roots

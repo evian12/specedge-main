@@ -1,0 +1,25 @@
+mode: kd
+seed: 42
+
+# Start KD from the best SFT checkpoint, not from the original base model.
+model: checkpoints/AMD-Llama-135m-sft/best
+train_path: data/distillation/amd135m/kd_train.jsonl
+validation_path: data/distillation/amd135m/kd_validation.jsonl
+output_dir: checkpoints/AMD-Llama-135m-sft-kd
+device: cuda:0
+dtype: fp16
+batch_size: 1
+gradient_accumulation_steps: 32
+epochs: 1
+learning_rate: 5.0e-6
+weight_decay: 0.01
+warmup_ratio: 0.03
+scheduler: cosine
+max_grad_norm: 1.0
+gradient_checkpointing: true
+num_workers: 0
+log_every: 10
+
+hard_loss_weight: 0.5
+kd_loss_weight: 0.5
+distillation_temperature: 1.0

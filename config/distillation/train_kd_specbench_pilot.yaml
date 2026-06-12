@@ -1,0 +1,23 @@
+mode: kd
+seed: 42
+model: checkpoints/AMD-Llama-135m-specbench-pilot-sft/best
+train_path: data/distillation/specbench_pilot/kd_train.jsonl
+validation_path: data/distillation/specbench_pilot/kd_validation.jsonl
+output_dir: checkpoints/AMD-Llama-135m-specbench-pilot-sft-kd
+device: cuda:0
+dtype: fp16
+batch_size: 4
+gradient_accumulation_steps: 8
+epochs: 2
+learning_rate: 1.0e-5
+weight_decay: 0.01
+warmup_ratio: 0.05
+scheduler: cosine
+max_grad_norm: 1.0
+gradient_checkpointing: true
+num_workers: 0
+log_every: 5
+
+hard_loss_weight: 0.5
+kd_loss_weight: 0.5
+distillation_temperature: 1.0

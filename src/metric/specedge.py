@@ -106,6 +106,11 @@ def overall_analysis(server_df: pl.DataFrame, client_df: pl.DataFrame, subset: s
         case "retrieval":
             client_df = client_df.filter(RETRIEVAL_OFFSET <= pl.col("req_idx"))
     server_time = server_end_time - server_start_time
+    server_active_ms = (
+        server_df.select("target.server_end_to_end_t").sum().item()
+    )
+    server_wall_seconds = server_time.total_seconds()
+    server_active_seconds = server_active_ms / 1000
 
     return {
         "draft": {
@@ -284,10 +289,17 @@ def overall_analysis(server_df: pl.DataFrame, client_df: pl.DataFrame, subset: s
             )
             .sum()
             .item(),
-            "server": server_time.total_seconds(),
+            "server": server_wall_seconds,
+            "server_active": server_active_seconds,
+            "server_active_ratio": (
+                server_active_seconds / server_wall_seconds
+                if server_wall_seconds > 0
+                else 0.0
+            ),
         },
         "cost": {
-            "server": GPU_COST * server_time.total_seconds(),
+            "server": GPU_COST * server_wall_seconds,
+            "server_active": GPU_COST * server_active_seconds,
             "edge": RTX4090_GPU_COST
             * client_df.select(pl.col("draft.end_to_end") + pl.col("target.end_to_end"))
             .sum()
@@ -296,12 +308,12 @@ def overall_analysis(server_df: pl.DataFrame, client_df: pl.DataFrame, subset: s
         },
         "throughput": {
             "value": client_df.select("num_accepted_tokens").sum().item()
-            / server_time.total_seconds()
+            / server_wall_seconds
         },
         "cost_efficiency": (
             client_df.select("num_accepted_tokens").sum().item()
             / (
-                GPU_COST * server_time.total_seconds()
+                GPU_COST * server_wall_seconds
                 + RTX4090_GPU_COST
                 * client_df.select(
                     pl.col("draft.end_to_end") + pl.col("target.end_to_end")
@@ -403,12 +415,24 @@ def print_table(client_df: pl.DataFrame, server_df: pl.DataFrame, subset: str):
     )
     overall_table.add_section()
     overall_table.add_row(
-        "Server Running Time",
+        "Server billed wall time",
         f"{metrics['running_time']['server']:.3f} s",
     )
     overall_table.add_row(
-        "Server cost",
+        "Server active inference time",
+        f"{metrics['running_time']['server_active']:.3f} s",
+    )
+    overall_table.add_row(
+        "Server active ratio",
+        f"{metrics['running_time']['server_active_ratio'] * 100:.3f} %",
+    )
+    overall_table.add_row(
+        "Server billed cost",
         f"${metrics['cost']['server']:.3f}",
+    )
+    overall_table.add_row(
+        "Server active-time cost (diagnostic)",
+        f"${metrics['cost']['server_active']:.3f}",
     )
     overall_table.add_row(
         "Edge Running Time",
@@ -527,7 +551,12 @@ if __name__ == "__main__":
         default="overall",
     )
     parser.add_argument("--plain", action="store_true", help="Use plain text data")
-    parser.add_argument("--gpu", default="A100_80", type=str, choices=["A100_80", "A100_40"])
+    parser.add_argument(
+        "--gpu",
+        default="A100_80",
+        type=str,
+        choices=["A100_80", "A100_40", "RTX4090"],
+    )
     args = parser.parse_args()
     
     if args.gpu == "A100_80":
@@ -536,6 +565,9 @@ if __name__ == "__main__":
     elif args.gpu == "A100_40":
         print("Using A100_40 GPU")
         GPU_COST = A100_GPU_COST
+    elif args.gpu == "RTX4090":
+        print("Using RTX4090 GPU")
+        GPU_COST = RTX4090_GPU_COST
     else:
         raise ValueError("Invalid GPU option")
 

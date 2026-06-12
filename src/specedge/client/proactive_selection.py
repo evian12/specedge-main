@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from math import floor
 
 import torch
 
@@ -10,6 +11,176 @@ class ProactiveRootCandidate:
     leaf_probability: float
     bonus_probability: float
     joint_probability: float
+    stop_depth: int | None = None
+
+
+def acceptance_stop_probabilities(
+    survival: list[float],
+    max_depth: int,
+) -> list[float]:
+    """Convert P(accepted depth >= d) into P(accepted depth == d)."""
+    if max_depth < 0:
+        raise ValueError("max_depth must be non-negative")
+    if not survival:
+        raise ValueError("acceptance survival probabilities are required")
+
+    values = [
+        survival[min(depth, len(survival) - 1)]
+        for depth in range(max_depth + 1)
+    ]
+    stop_probabilities = [
+        max(0.0, values[depth] - values[depth + 1])
+        for depth in range(max_depth)
+    ]
+    stop_probabilities.append(max(0.0, values[max_depth]))
+    return stop_probabilities
+
+
+def allocate_sequence_bonus_counts(
+    stop_probabilities: list[float],
+    *,
+    max_roots: int,
+    max_bonus_per_depth: int,
+) -> list[int]:
+    """Allocate a bounded number of bonus roots proportional to stop mass."""
+    if max_roots < 0:
+        raise ValueError("max_roots must be non-negative")
+    if max_bonus_per_depth <= 0:
+        raise ValueError("max_bonus_per_depth must be positive")
+    if not stop_probabilities or max_roots == 0:
+        return [0] * len(stop_probabilities)
+
+    weights = [max(0.0, value) for value in stop_probabilities]
+    total_weight = sum(weights)
+    if total_weight <= 0.0:
+        return [0] * len(weights)
+
+    positive_depths = [
+        depth for depth, weight in enumerate(weights) if weight > 0.0
+    ]
+    slots = min(
+        max_roots,
+        len(positive_depths) * max_bonus_per_depth,
+    )
+    ideals = [slots * weight / total_weight for weight in weights]
+    counts = [
+        min(max_bonus_per_depth, floor(ideal))
+        for ideal in ideals
+    ]
+    remaining = slots - sum(counts)
+    order = sorted(
+        positive_depths,
+        key=lambda depth: (
+            ideals[depth] - floor(ideals[depth]),
+            weights[depth],
+            -depth,
+        ),
+        reverse=True,
+    )
+    while remaining > 0:
+        allocated = False
+        for depth in order:
+            if counts[depth] >= max_bonus_per_depth:
+                continue
+            counts[depth] += 1
+            remaining -= 1
+            allocated = True
+            if remaining == 0:
+                break
+        if not allocated:
+            break
+    return counts
+
+
+def select_sequence_bonus_candidates(
+    path_node_indices: torch.Tensor,
+    stop_probabilities: list[float],
+    bonus_token_ids: torch.Tensor,
+    bonus_logprobs: torch.Tensor,
+    *,
+    max_bonus_per_depth: int,
+    max_roots: int,
+    min_root_probability: float,
+) -> list[ProactiveRootCandidate]:
+    """Select bonus roots across all possible stopping depths of one path."""
+    depth_count = path_node_indices.numel()
+    if depth_count == 0 or max_roots <= 0:
+        return []
+    if len(stop_probabilities) != depth_count:
+        raise ValueError(
+            "stop probabilities must match the sequence path length"
+        )
+    if bonus_token_ids.size(0) != depth_count:
+        raise ValueError("bonus token rows must match the sequence path")
+
+    available_bonus = min(
+        max_bonus_per_depth,
+        bonus_token_ids.size(1),
+        bonus_logprobs.size(1),
+    )
+    counts = allocate_sequence_bonus_counts(
+        stop_probabilities,
+        max_roots=max_roots,
+        max_bonus_per_depth=available_bonus,
+    )
+
+    candidates: list[ProactiveRootCandidate] = []
+    for depth, count in enumerate(counts):
+        stop_probability = stop_probabilities[depth]
+        for bonus_rank in range(count):
+            bonus_probability = float(
+                bonus_logprobs[depth, bonus_rank].exp().item()
+            )
+            joint_probability = stop_probability * bonus_probability
+            if joint_probability < min_root_probability:
+                continue
+            candidates.append(
+                ProactiveRootCandidate(
+                    leaf_idx=int(path_node_indices[depth].item()),
+                    token_id=int(
+                        bonus_token_ids[depth, bonus_rank].item()
+                    ),
+                    leaf_probability=stop_probability,
+                    bonus_probability=bonus_probability,
+                    joint_probability=joint_probability,
+                    stop_depth=depth,
+                )
+            )
+
+    candidates.sort(
+        key=lambda candidate: candidate.joint_probability,
+        reverse=True,
+    )
+    return candidates[:max_roots]
+
+
+def trace_main_sequence_nodes(
+    leaf_indices: torch.Tensor,
+    positions: torch.Tensor,
+    logprobs: torch.Tensor,
+    parents: torch.Tensor,
+    *,
+    prefix_tail: int,
+) -> list[int]:
+    """Trace the highest-probability leaf at maximum depth to the prefix."""
+    if leaf_indices.numel() == 0:
+        return []
+    deepest_position = positions[leaf_indices].max()
+    deepest_leaves = leaf_indices[
+        positions[leaf_indices] == deepest_position
+    ]
+    best_leaf = deepest_leaves[logprobs[deepest_leaves].argmax()]
+
+    path = []
+    node_idx = int(best_leaf.item())
+    while node_idx > prefix_tail:
+        path.append(node_idx)
+        node_idx = int(parents[node_idx].item())
+    if node_idx != prefix_tail:
+        return []
+    path.append(prefix_tail)
+    path.reverse()
+    return path
 
 
 def select_bonus_candidates(

@@ -11,8 +11,11 @@ import util
 from config import SpecEdgeClientConfig as config
 from specedge.client.proactive_selection import (
     ProactiveRootCandidate,
+    acceptance_stop_probabilities,
     select_bonus_candidates,
     select_ids_by_probability,
+    select_sequence_bonus_candidates,
+    trace_main_sequence_nodes,
 )
 from specedge.engine.graph import GraphEngine
 from specedge.tree import Tree
@@ -44,6 +47,8 @@ class ProactiveDraftResult:
     layer_batch_widths: list[int] = field(default_factory=list)
     layer_active_root_counts: list[int] = field(default_factory=list)
     deepest_leaf_indices: list[int] = field(default_factory=list)
+    sequence_path_depth: Optional[int] = None
+    sequence_stop_probabilities: list[float] = field(default_factory=list)
 
     def find_matching_root(
         self, leaf_idx: int, token_id: int
@@ -66,6 +71,7 @@ class ProactiveRootResult:
     leaf_probability: float
     bonus_probability: float
     joint_probability: float
+    stop_depth: Optional[int] = None
     node_indices: list[int] = field(default_factory=list)
     executed_depth: int = 0
 
@@ -77,6 +83,7 @@ class ProactiveRootResult:
             "leaf_probability": self.leaf_probability,
             "bonus_probability": self.bonus_probability,
             "joint_probability": self.joint_probability,
+            "stop_depth": self.stop_depth,
             "node_count": len(self.node_indices),
             "executed_depth": self.executed_depth,
         }
@@ -127,6 +134,13 @@ class ProactiveDraftSession:
         self.result.deepest_leaf_count = len(deepest_leaf_indices)
         self.result.max_leaf_depth = max_leaf_depth
         self.result.selected_leaf_count = selected_leaf_count
+        if client._path_policy == "sequence_depth":
+            self.result.sequence_path_depth = (
+                client._last_sequence_path_depth
+            )
+            self.result.sequence_stop_probabilities = list(
+                client._last_sequence_stop_probabilities
+            )
 
         if not candidates:
             self.result.skipped_reason = "no_candidate"
@@ -179,6 +193,7 @@ class ProactiveDraftSession:
                     leaf_probability=candidate.leaf_probability,
                     bonus_probability=candidate.bonus_probability,
                     joint_probability=candidate.joint_probability,
+                    stop_depth=candidate.stop_depth,
                     node_indices=[node_idx],
                 )
             )
@@ -291,6 +306,24 @@ class ProactiveDraftSession:
                     logits, parent_indices, parent_positions, parent_scores
                 )
             )
+        elif self._client._path_policy == "sequence_depth":
+            proactive_node_count = self._tree.end - self._tree.prefix_len
+            remaining_budget = max(
+                0, self._client._max_budget - proactive_node_count
+            )
+            (
+                token_ids,
+                token_positions,
+                parent_indices,
+                beam_scores,
+            ) = self._client._get_next_sequence_multi(
+                logits,
+                parent_indices,
+                parent_positions,
+                parent_scores,
+                self._node_root_ids,
+                remaining_budget,
+            )
         else:
             proactive_node_count = self._tree.end - self._tree.prefix_len
             remaining_budget = max(
@@ -382,6 +415,22 @@ class SpecExecProactiveDraft:
         self._depth_probability_coverage = (
             config.proactive_multi_depth_probability_coverage
         )
+        self._sequence_acceptance_survival = (
+            config.proactive_sequence_acceptance_survival
+        )
+        self._sequence_max_bonus_per_depth = (
+            config.proactive_sequence_max_bonus_per_depth
+        )
+        self._sequence_max_roots = config.proactive_sequence_max_roots
+        self._sequence_min_root_probability = (
+            config.proactive_sequence_min_root_probability
+        )
+        self._last_sequence_path_depth: Optional[int] = None
+        self._last_sequence_stop_probabilities: list[float] = []
+        if self._path_policy == "sequence_depth":
+            self._depth_probability_coverage = (
+                config.proactive_sequence_depth_probability_coverage
+            )
 
         # FIXME: remove hard-coded value
         self._max_len = max_len
@@ -452,6 +501,68 @@ class SpecExecProactiveDraft:
             )
             return [candidate], [candidate.leaf_idx], leaf_depth, 1
 
+        if self._path_policy == "sequence_depth":
+            path_indices = self._get_main_sequence_nodes()
+            if path_indices.numel() == 0:
+                return [], [], None, 0
+
+            input_ids = self._tree.tokens[path_indices].unsqueeze(0)
+            position_ids = self._tree.positions[path_indices].unsqueeze(0)
+            attention_mask = self._tree.amask[..., path_indices, :]
+            cache_batch_indices = torch.zeros_like(
+                path_indices,
+                dtype=torch.long,
+                device=self._device,
+            )
+            logits = self._engine.forward(
+                input_ids=input_ids,
+                position_ids=position_ids,
+                cache_batch_indices=cache_batch_indices,
+                cache_seq_indices=path_indices,
+                attention_mask=attention_mask,
+            )
+            logits = logits[0, -path_indices.numel() :, :]
+            bonus = torch.log_softmax(logits, dim=-1).topk(
+                k=self._sequence_max_bonus_per_depth,
+                dim=-1,
+                sorted=True,
+            )
+            path_depth = path_indices.numel() - 1
+            stop_probabilities = acceptance_stop_probabilities(
+                self._sequence_acceptance_survival,
+                path_depth,
+            )
+            self._last_sequence_path_depth = path_depth
+            self._last_sequence_stop_probabilities = stop_probabilities
+            candidates = select_sequence_bonus_candidates(
+                path_indices,
+                stop_probabilities,
+                bonus.indices,
+                bonus.values,
+                max_bonus_per_depth=(
+                    self._sequence_max_bonus_per_depth
+                ),
+                max_roots=self._sequence_max_roots,
+                min_root_probability=(
+                    self._sequence_min_root_probability
+                ),
+            )
+            selected_depths = {
+                candidate.stop_depth for candidate in candidates
+            }
+            self._logger.debug(
+                "Sequence depth roots: path_depth=%d depths=%d roots=%d",
+                path_depth,
+                len(selected_depths),
+                len(candidates),
+            )
+            return (
+                candidates,
+                [int(path_indices[-1].item())],
+                path_depth,
+                len(selected_depths),
+            )
+
         if self._path_policy != "deepest_multi":
             raise ValueError(
                 f"Invalid proactive path policy: {self._path_policy}"
@@ -516,6 +627,28 @@ class SpecExecProactiveDraft:
             [int(index.item()) for index in deepest_leaf_indices],
             max_leaf_depth,
             selected_leaf_count,
+        )
+
+    def _get_main_sequence_nodes(self) -> torch.Tensor:
+        """Return prefix tail plus the highest-probability deepest path."""
+        leaf_indices = self._get_leaves_nodes()
+        if leaf_indices.numel() == 0:
+            return torch.empty(
+                0, dtype=torch.long, device=self._device
+            )
+
+        prefix_tail = self._tree.prefix_len - 1
+        path = trace_main_sequence_nodes(
+            leaf_indices,
+            self._tree.positions,
+            self._tree.logprobs,
+            self._tree.parents,
+            prefix_tail=prefix_tail,
+        )
+        return torch.tensor(
+            path,
+            dtype=torch.long,
+            device=self._device,
         )
 
     def _get_best_bonus_token_candidate(self):
@@ -727,6 +860,53 @@ class SpecExecProactiveDraft:
             beam_positions[parent_offsets] + 1,
             selected_parent_indices,
             flat_scores[selected],
+        )
+
+    def _get_next_sequence_multi(
+        self,
+        logits: torch.Tensor,
+        beam_indices: torch.Tensor,
+        beam_positions: torch.Tensor,
+        beam_scores: torch.Tensor,
+        node_root_ids: dict[int, int],
+        max_new_nodes: int,
+    ):
+        """Extend every active bonus root by at most one greedy token."""
+        if max_new_nodes <= 0 or beam_indices.numel() == 0:
+            empty_long = torch.empty(
+                0, dtype=torch.long, device=self._device
+            )
+            empty_float = torch.empty(
+                0, dtype=torch.float32, device=self._device
+            )
+            return empty_long, empty_long, empty_long, empty_float
+
+        logits = logits[0, -beam_indices.numel() :, :]
+        logprobs = torch.log_softmax(logits, dim=-1)
+        best_logprobs, best_token_ids = logprobs.max(dim=-1)
+        scores = beam_scores + np.log(0.95) + best_logprobs
+
+        best_by_root = []
+        root_ids = torch.tensor(
+            [node_root_ids[int(index.item())] for index in beam_indices],
+            dtype=torch.long,
+            device=self._device,
+        )
+        for root_id in torch.unique(root_ids).tolist():
+            offsets = torch.where(root_ids == root_id)[0]
+            best_by_root.append(
+                offsets[scores[offsets].argmax()]
+            )
+        selected = torch.stack(best_by_root)
+        if selected.numel() > max_new_nodes:
+            selected = selected[
+                scores[selected].topk(max_new_nodes).indices
+            ]
+        return (
+            best_token_ids[selected],
+            beam_positions[selected] + 1,
+            beam_indices[selected],
+            scores[selected],
         )
 
     def _get_next_beams(

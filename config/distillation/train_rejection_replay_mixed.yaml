@@ -1,0 +1,32 @@
+mode: kd
+seed: 2032
+model: checkpoints/AMD-Llama-135m-acceptance-kd-mixed/epoch-3
+train_path: data/distillation/rejection_replay/kd_train.jsonl
+validation_path: data/distillation/acceptance_mixed/kd_validation.jsonl
+output_dir: checkpoints/AMD-Llama-135m-rejection-replay
+device: cuda:0
+dtype: fp16
+batch_size: 4
+gradient_accumulation_steps: 8
+epochs: 2
+learning_rate: 1.0e-6
+weight_decay: 0.03
+warmup_ratio: 0.05
+scheduler: cosine
+max_grad_norm: 1.0
+gradient_checkpointing: true
+num_workers: 0
+log_every: 5
+
+# The margin term directly optimizes greedy target/student agreement. Keeping
+# the ordinary mixed KD records in kd_train.jsonl prevents hard-example replay
+# from collapsing general distribution matching.
+hard_loss_weight: 0.20
+kd_loss_weight: 0.15
+tvd_loss_weight: 0.25
+margin_loss_weight: 0.40
+top1_margin: 0.10
+distillation_temperature: 1.0
+rejection_weight: 2.0
+rejection_window_size: 2
+min_teacher_confidence: 0.20
