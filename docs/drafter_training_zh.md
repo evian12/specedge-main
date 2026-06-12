@@ -74,7 +74,7 @@ AdaSPEC 的核心启发是：小模型容量有限，不应把同样的训练预
 上，应优先学习真正影响接受的 token。
 
 - AdaSPEC: Selective Knowledge Distillation for Efficient Speculative
-  Decoding
+  Decoders
   <https://arxiv.org/abs/2510.19779>
 
 本项目采用的对应设计：
@@ -87,7 +87,7 @@ AdaSPEC 的核心启发是：小模型容量有限，不应把同样的训练预
 
 Draft-OPD 使用目标模型轨迹识别草稿模型的错误位置，并针对这些位置进行回放训练。
 
-- Draft-OPD: Online Policy Distillation for Draft Models
+- Draft-OPD: On-Policy Distillation for Speculative Draft Models
   <https://arxiv.org/abs/2605.29343>
 
 本项目采用的对应设计：
