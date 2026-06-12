@@ -792,6 +792,12 @@ Jetson model:
 /home/yypan/models/AMD-Llama-135m-replay-gain-round2
 ```
 
+最终 `model.safetensors` 的 SHA-256：
+
+```text
+426bf56eafd491f6554cf2fa50c9a6b4cf916ede93f3cc29bc0b5414de84d6ab
+```
+
 最终一次性 141 条 late holdout：
 
 | 模型 | Top-1 | Top-8 覆盖率 | 平均接受深度 | P(depth >= 2) |
