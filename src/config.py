@@ -387,6 +387,9 @@ class SpecEdgeBatchServerConfig(metaclass=_ConfigMeta):
         cls.max_budget = int(cls._from_env("SPECEDGE_MAX_BUDGET"))
         cls.num_clients = int(cls._from_env("SPECEDGE_NUM_CLIENTS"))
         cls.cache_prefill = cls._from_env("SPECEDGE_CACHE_PREFILL") == "True"
+        cls.simulated_latency_ms = float(
+            cls._from_env_default("SPECEDGE_SIMULATED_LATENCY_MS", "0.0")
+        )
 
         cls._initialized = True
 

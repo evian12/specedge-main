@@ -71,6 +71,7 @@ def _load_config(config_file: Path):
     max_budget = config_yaml["client"]["max_budget"]
     num_clients = config_yaml["server"]["num_clients"]
     cache_prefill = config_yaml["server"]["cache_prefill"]
+    simulated_latency_ms = config_yaml["server"].get("simulated_latency_ms", 0.0)
 
     os.environ["SPECEDGE_RESULT_PATH"] = result_path
     os.environ["SPECEDGE_EXP_NAME"] = exp_name
@@ -93,6 +94,7 @@ def _load_config(config_file: Path):
 
     os.environ["SPECEDGE_NUM_CLIENTS"] = str(num_clients)
     os.environ["SPECEDGE_CACHE_PREFILL"] = str(cache_prefill)
+    os.environ["SPECEDGE_SIMULATED_LATENCY_MS"] = str(simulated_latency_ms)
 
     log_config = log.get_default_log_config(
         Path(config.result_path) / config.exp_name, "server"
@@ -114,6 +116,7 @@ def _load_config(config_file: Path):
     logger.debug("max_batch_size: %s", max_batch_size)
     logger.debug("max_n_beams: %s", max_n_beams)
     logger.debug("max_budget: %s", max_budget)
+    logger.debug("simulated_latency_ms: %s", simulated_latency_ms)
     logger.info("Config loaded successfully.")
 
 
