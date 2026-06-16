@@ -571,7 +571,10 @@ class InferenceController:
                 )
             )
 
-        self._reorder_kv_cache(selection=selection)
+        self._reorder_kv_cache(
+            selection=selection,
+            request_token_counts=request_token_counts,
+        )
         return forward_t.elapsed, prefill_indices
 
     def _check_batch_condition(self):
@@ -586,37 +589,70 @@ class InferenceController:
             case _:
                 raise ValueError(f"Unknown batch type: {self._batch_type}")
 
-    def _reorder_kv_cache(self, selection: torch.Tensor):
+    def _reorder_kv_cache(
+        self,
+        selection: torch.Tensor,
+        request_token_counts: list[int],
+    ):
         offset = self._cache_seq_indices[:, 0][None, :].T
 
-        target_choices_list = []
+        target_choices = torch.zeros_like(self._input_ids[..., 1:])
+        valid_draft_mask = torch.zeros_like(target_choices, dtype=torch.bool)
         for batch_idx in range(self._batch_size):
-            offset_b = self._cache_seq_indices[batch_idx, 0]
-            parent_indices_b = self._parent_indices[batch_idx] - offset_b
-            target_choices_b = selection[batch_idx].flatten()[parent_indices_b]
-            target_choices_list.append(target_choices_b)
-        target_choices = torch.stack(target_choices_list)
+            valid_draft_count = max(0, request_token_counts[batch_idx] - 1)
+            if valid_draft_count == 0:
+                continue
 
-        logit_mask = target_choices == self._input_ids[..., 1:]
+            offset_b = self._cache_seq_indices[batch_idx, 0]
+            parent_indices_b = (
+                self._parent_indices[batch_idx, :valid_draft_count] - offset_b
+            )
+            if parent_indices_b.numel() > 0 and (
+                parent_indices_b.min() < 0
+                or parent_indices_b.max() >= selection.size(1)
+            ):
+                raise ValueError(
+                    "parent_indices are outside the current verification window: "
+                    f"min={int(parent_indices_b.min().item())}, "
+                    f"max={int(parent_indices_b.max().item())}, "
+                    f"selection_size={selection.size(1)}."
+                )
+
+            target_choices[batch_idx, :valid_draft_count] = selection[
+                batch_idx
+            ].flatten()[parent_indices_b]
+            valid_draft_mask[batch_idx, :valid_draft_count] = True
+
+        logit_mask = (target_choices == self._input_ids[..., 1:]) & valid_draft_mask
 
         _batch_indices = self._cache_batch_indices.flatten()
         _seq_indices = self._cache_seq_indices.flatten()
 
-        tree_mask = torch.empty(
+        tree_mask = torch.zeros(
             (self._batch_size, self._max_budget, self._max_budget),
-            dtype=torch.float16,
+            dtype=self._dtype,
             device=self._device,
         )
 
         for batch_idx in range(self._batch_size):
+            valid_draft_count = max(0, request_token_counts[batch_idx] - 1)
+            if valid_draft_count == 0:
+                continue
             b_offset = self._cache_seq_indices[batch_idx, 1]
-            tree_mask[batch_idx].copy_(
+            tree_mask[batch_idx, :valid_draft_count].copy_(
                 self._attention_mask[
-                    batch_idx, 0, 1:, b_offset : b_offset + self._max_budget
+                    batch_idx,
+                    0,
+                    1 : 1 + valid_draft_count,
+                    b_offset : b_offset + self._max_budget,
                 ]
             )
 
-        position = self._position_ids[:, 1:] - offset
+        position = torch.where(
+            valid_draft_mask,
+            self._position_ids[:, 1:] - offset,
+            torch.full_like(self._position_ids[:, 1:], -1),
+        )
 
         accepted_mask = logit_mask[:, None, :] & tree_mask.to(torch.bool)
 
