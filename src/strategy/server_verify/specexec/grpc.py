@@ -14,6 +14,11 @@ import util
 from config import SpecEdgeBatchServerConfig as config
 from specedge.engine.graph import BatchGraphEngine
 from specedge_grpc import specedge_pb2, specedge_pb2_grpc
+from strategy.server_verify.specexec.padding import (
+    copy_padded_1d,
+    copy_padded_attention_mask,
+    validate_draft_request_shapes,
+)
 
 
 class SpecExecBatchServer(specedge_pb2_grpc.SpecEdgeServiceServicer):
@@ -435,6 +440,7 @@ class InferenceController:
     @torch.inference_mode()
     def _inference(self, batch: list[specedge_pb2.ValidateRequest]):
         prefill_indices: list[tuple[int, int]] = []
+        request_token_counts: list[int] = []
         self._engine._past_key_values.clear()
 
         for batch_idx, req in enumerate(batch):
@@ -447,25 +453,52 @@ class InferenceController:
             else:
                 self._iter_idx[req.client_idx] += 1
 
-            self._input_ids[batch_idx].copy_(
-                util.decode(req.input_ids, self._device, torch.long, (-1,))
+            input_ids = util.decode(req.input_ids, self._device, torch.long, (-1,))
+            position_ids = util.decode(
+                req.position_ids, self._device, torch.long, (-1,)
             )
-            self._position_ids[batch_idx].copy_(
-                util.decode(req.position_ids, self._device, torch.long, (-1,))
+            cache_seq_indices = util.decode(
+                req.cache_seq_indices, self._device, torch.long, (-1,)
             )
-            self._parent_indices[batch_idx].copy_(
-                util.decode(req.parent_indices, self._device, torch.long, (-1,))
+            parent_indices = util.decode(
+                req.parent_indices, self._device, torch.long, (-1,)
             )
-            self._cache_seq_indices[batch_idx].copy_(
-                util.decode(req.cache_seq_indices, self._device, torch.long, (-1,))
+            attention_mask = util.decode(
+                req.attention_mask,
+                self._device,
+                self._dtype,
+                (1, -1, self._max_len),
             )
-            self._attention_mask[batch_idx].copy_(
-                util.decode(
-                    req.attention_mask,
-                    self._device,
-                    self._dtype,
-                    (1, -1, self._max_len),
-                )
+
+            validate_draft_request_shapes(
+                input_len=input_ids.numel(),
+                position_len=position_ids.numel(),
+                cache_len=cache_seq_indices.numel(),
+                attention_len=attention_mask.size(1),
+                parent_len=parent_indices.numel(),
+            )
+
+            input_len = copy_padded_1d(
+                self._input_ids[batch_idx], input_ids, name="input_ids"
+            )
+            request_token_counts.append(input_len)
+            copy_padded_1d(
+                self._position_ids[batch_idx], position_ids, name="position_ids"
+            )
+            copy_padded_1d(
+                self._cache_seq_indices[batch_idx],
+                cache_seq_indices,
+                name="cache_seq_indices",
+            )
+            copy_padded_1d(
+                self._parent_indices[batch_idx],
+                parent_indices,
+                name="parent_indices",
+            )
+            copy_padded_attention_mask(
+                self._attention_mask[batch_idx],
+                attention_mask,
+                name="attention_mask",
             )
 
             if not req.prefill:
@@ -527,9 +560,13 @@ class InferenceController:
         for batch_idx, client_idx in enumerate(self._client_indices):
             if client_idx == -1:
                 continue
+            request_token_count = request_token_counts[batch_idx]
             self._resp_queue.put(
                 (
-                    (util.encode(selection[batch_idx]), len(prefill_indices)),
+                    (
+                        util.encode(selection[batch_idx, :request_token_count]),
+                        len(prefill_indices),
+                    ),
                     client_idx.item(),
                 )
             )
