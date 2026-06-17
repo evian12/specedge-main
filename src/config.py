@@ -189,6 +189,48 @@ class SpecEdgeClientConfig(metaclass=_ConfigMeta):
                 "2",
             )
         )
+        cls.initial_draft_local_high_score = float(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_HIGH_SCORE",
+                "2.0",
+            )
+        )
+        cls.initial_draft_local_low_penalty = float(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_LOW_PENALTY",
+                "1.0",
+            )
+        )
+        cls.initial_draft_local_increase_score_threshold = float(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_INCREASE_SCORE_THRESHOLD",
+                "3.0",
+            )
+        )
+        cls.initial_draft_local_decrease_score_threshold = float(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_DECREASE_SCORE_THRESHOLD",
+                "3.0",
+            )
+        )
+        cls.initial_draft_local_protect_window = int(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_PROTECT_WINDOW",
+                "5",
+            )
+        )
+        cls.initial_draft_local_protect_avg_accepted_depth = float(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_PROTECT_AVG_ACCEPTED_DEPTH",
+                "2.0",
+            )
+        )
+        cls.initial_draft_local_neutral_score_decay = float(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_NEUTRAL_SCORE_DECAY",
+                "0.8",
+            )
+        )
 
         # proactive draft configuration
         cls.proactive_type = cls._from_env("SPECEDGE_PROACTIVE_TYPE")

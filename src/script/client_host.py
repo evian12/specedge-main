@@ -77,6 +77,27 @@ def main(config_file: str):
     initial_draft_local_decrease_streak = initial_draft_local.get(
         "decrease_streak", 2
     )
+    initial_draft_local_high_score = initial_draft_local.get(
+        "high_score", 2.0
+    )
+    initial_draft_local_low_penalty = initial_draft_local.get(
+        "low_penalty", 1.0
+    )
+    initial_draft_local_increase_score_threshold = (
+        initial_draft_local.get("increase_score_threshold", 3.0)
+    )
+    initial_draft_local_decrease_score_threshold = (
+        initial_draft_local.get("decrease_score_threshold", 3.0)
+    )
+    initial_draft_local_protect_window = initial_draft_local.get(
+        "protect_window", 5
+    )
+    initial_draft_local_protect_avg_accepted_depth = (
+        initial_draft_local.get("protect_avg_accepted_depth", 2.0)
+    )
+    initial_draft_local_neutral_score_decay = initial_draft_local.get(
+        "neutral_score_decay", 0.8
+    )
     req_offset = config["client"]["req_offset"]
     sample_req_cnt = config["client"]["sample_req_cnt"]
     reasoning = config["client"]["reasoning"]
@@ -253,6 +274,27 @@ def main(config_file: str):
                 ),
                 "SPECEDGE_INITIAL_DRAFT_LOCAL_DECREASE_STREAK": (
                     initial_draft_local_decrease_streak
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_HIGH_SCORE": (
+                    initial_draft_local_high_score
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_LOW_PENALTY": (
+                    initial_draft_local_low_penalty
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_INCREASE_SCORE_THRESHOLD": (
+                    initial_draft_local_increase_score_threshold
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_DECREASE_SCORE_THRESHOLD": (
+                    initial_draft_local_decrease_score_threshold
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_PROTECT_WINDOW": (
+                    initial_draft_local_protect_window
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_PROTECT_AVG_ACCEPTED_DEPTH": (
+                    initial_draft_local_protect_avg_accepted_depth
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_NEUTRAL_SCORE_DECAY": (
+                    initial_draft_local_neutral_score_decay
                 ),
                 "SPECEDGE_PROACTIVE_TYPE": proactive_type,
                 "SPECEDGE_PROACTIVE_MODE": proactive_mode,

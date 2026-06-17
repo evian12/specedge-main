@@ -147,8 +147,13 @@ class LocalStreakInitialDraftPolicyTest(unittest.TestCase):
             initial_depth=3,
             min_depth=2,
             max_depth=4,
-            increase_streak=2,
-            decrease_streak=2,
+            high_score=2.0,
+            low_penalty=1.0,
+            increase_score_threshold=3.0,
+            decrease_score_threshold=3.0,
+            protect_window=5,
+            protect_avg_accepted_depth=2.0,
+            neutral_score_decay=0.8,
             reward_clip=20.0,
         )
 
@@ -180,7 +185,7 @@ class LocalStreakInitialDraftPolicyTest(unittest.TestCase):
         self.assertEqual(decision.depth, 3)
         self.assertEqual(decision.reason, "local_streak")
 
-    def test_local_streak_increases_after_consecutive_deep_accepts(self):
+    def test_local_streak_increases_after_strong_accepts(self):
         policy = self.create_local_policy()
 
         self.observe_local(policy, accepted_tokens=3)
@@ -189,14 +194,28 @@ class LocalStreakInitialDraftPolicyTest(unittest.TestCase):
 
         self.assertEqual(policy.current_depth, 4)
 
-    def test_local_streak_decreases_after_consecutive_shallow_accepts(self):
+    def test_local_streak_decreases_after_repeated_shallow_accepts(self):
         policy = self.create_local_policy()
 
         self.observe_local(policy, accepted_tokens=1)
         self.assertEqual(policy.current_depth, 3)
         self.observe_local(policy, accepted_tokens=2)
-
+        self.assertEqual(policy.current_depth, 3)
+        self.observe_local(policy, accepted_tokens=1)
         self.assertEqual(policy.current_depth, 2)
+
+    def test_local_streak_protects_good_recent_history(self):
+        policy = self.create_local_policy()
+
+        for accepted_tokens in [4, 4, 4, 4, 4]:
+            self.observe_local(policy, accepted_tokens=accepted_tokens)
+        self.assertEqual(policy.current_depth, 4)
+
+        for _ in range(3):
+            self.observe_local(policy, accepted_tokens=1)
+
+        self.assertEqual(policy.current_depth, 4)
+        self.assertLess(policy.score, 0.0)
 
     def test_local_streak_respects_depth_bounds(self):
         policy = self.create_local_policy()
@@ -205,7 +224,7 @@ class LocalStreakInitialDraftPolicyTest(unittest.TestCase):
             self.observe_local(policy, accepted_tokens=5)
         self.assertEqual(policy.current_depth, 4)
 
-        for _ in range(6):
+        for _ in range(12):
             self.observe_local(policy, accepted_tokens=1)
         self.assertEqual(policy.current_depth, 2)
 

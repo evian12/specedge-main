@@ -43,6 +43,13 @@ client:
       max_depth: 4
       increase_streak: 2
       decrease_streak: 2
+      high_score: 2.0
+      low_penalty: 1.0
+      increase_score_threshold: 3.0
+      decrease_score_threshold: 3.0
+      protect_window: 5
+      protect_avg_accepted_depth: 2.0
+      neutral_score_decay: 0.8
   proactive:
     type: disabled
     mode: baseline

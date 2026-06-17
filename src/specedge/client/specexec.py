@@ -161,11 +161,26 @@ class SpecExecClient:
                 initial_depth=config.initial_draft_local_initial_depth,
                 min_depth=config.initial_draft_local_min_depth,
                 max_depth=config.initial_draft_local_max_depth,
-                increase_streak=(
-                    config.initial_draft_local_increase_streak
+                high_score=(
+                    config.initial_draft_local_high_score
                 ),
-                decrease_streak=(
-                    config.initial_draft_local_decrease_streak
+                low_penalty=(
+                    config.initial_draft_local_low_penalty
+                ),
+                increase_score_threshold=(
+                    config.initial_draft_local_increase_score_threshold
+                ),
+                decrease_score_threshold=(
+                    config.initial_draft_local_decrease_score_threshold
+                ),
+                protect_window=(
+                    config.initial_draft_local_protect_window
+                ),
+                protect_avg_accepted_depth=(
+                    config.initial_draft_local_protect_avg_accepted_depth
+                ),
+                neutral_score_decay=(
+                    config.initial_draft_local_neutral_score_decay
                 ),
                 reward_clip=config.initial_draft_reward_clip,
             )
@@ -206,6 +221,38 @@ class SpecExecClient:
         if config.initial_draft_local_decrease_streak <= 0:
             raise ValueError(
                 "initial_draft.local_streak.decrease_streak must be positive"
+            )
+        if config.initial_draft_local_high_score <= 0.0:
+            raise ValueError(
+                "initial_draft.local_streak.high_score must be positive"
+            )
+        if config.initial_draft_local_low_penalty <= 0.0:
+            raise ValueError(
+                "initial_draft.local_streak.low_penalty must be positive"
+            )
+        if config.initial_draft_local_increase_score_threshold <= 0.0:
+            raise ValueError(
+                "initial_draft.local_streak.increase_score_threshold "
+                "must be positive"
+            )
+        if config.initial_draft_local_decrease_score_threshold <= 0.0:
+            raise ValueError(
+                "initial_draft.local_streak.decrease_score_threshold "
+                "must be positive"
+            )
+        if config.initial_draft_local_protect_window <= 0:
+            raise ValueError(
+                "initial_draft.local_streak.protect_window must be positive"
+            )
+        if config.initial_draft_local_protect_avg_accepted_depth < 0.0:
+            raise ValueError(
+                "initial_draft.local_streak.protect_avg_accepted_depth "
+                "must be non-negative"
+            )
+        if not 0.0 <= config.initial_draft_local_neutral_score_decay <= 1.0:
+            raise ValueError(
+                "initial_draft.local_streak.neutral_score_decay "
+                "must be in [0, 1]"
             )
         if self._proactive_type not in ["included", "excluded", "disabled"]:
             raise ValueError(f"Invalid proactive_type: {self._proactive_type}")

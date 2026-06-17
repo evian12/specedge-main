@@ -1,3 +1,4 @@
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional
 
@@ -37,12 +38,12 @@ class InitialDraftDecision:
 
 
 class LocalStreakInitialDraftPolicy:
-    """Per-request draft depth control driven by recent accepted depth."""
+    """Per-request draft depth control with score and recent-history guard."""
 
     feature_names = [
         "current_depth",
-        "accept_streak",
-        "reject_streak",
+        "score",
+        "recent_accepted_depth_mean",
         "context_ratio",
     ]
 
@@ -52,8 +53,13 @@ class LocalStreakInitialDraftPolicy:
         initial_depth: int,
         min_depth: int,
         max_depth: int,
-        increase_streak: int,
-        decrease_streak: int,
+        high_score: float,
+        low_penalty: float,
+        increase_score_threshold: float,
+        decrease_score_threshold: float,
+        protect_window: int,
+        protect_avg_accepted_depth: float,
+        neutral_score_decay: float,
         reward_clip: float,
     ) -> None:
         if min_depth <= 0:
@@ -62,35 +68,59 @@ class LocalStreakInitialDraftPolicy:
             raise ValueError("max_depth must be >= min_depth")
         if not min_depth <= initial_depth <= max_depth:
             raise ValueError("initial_depth must be in [min_depth, max_depth]")
-        if increase_streak <= 0:
-            raise ValueError("increase_streak must be positive")
-        if decrease_streak <= 0:
-            raise ValueError("decrease_streak must be positive")
+        if high_score <= 0.0:
+            raise ValueError("high_score must be positive")
+        if low_penalty <= 0.0:
+            raise ValueError("low_penalty must be positive")
+        if increase_score_threshold <= 0.0:
+            raise ValueError("increase_score_threshold must be positive")
+        if decrease_score_threshold <= 0.0:
+            raise ValueError("decrease_score_threshold must be positive")
+        if protect_window <= 0:
+            raise ValueError("protect_window must be positive")
+        if protect_avg_accepted_depth < 0.0:
+            raise ValueError("protect_avg_accepted_depth must be non-negative")
+        if not 0.0 <= neutral_score_decay <= 1.0:
+            raise ValueError("neutral_score_decay must be in [0, 1]")
         if reward_clip <= 0.0:
             raise ValueError("reward_clip must be positive")
 
         self.initial_depth = initial_depth
         self.min_depth = min_depth
         self.max_depth = max_depth
-        self.increase_streak = increase_streak
-        self.decrease_streak = decrease_streak
+        self.high_score = high_score
+        self.low_penalty = low_penalty
+        self.increase_score_threshold = increase_score_threshold
+        self.decrease_score_threshold = decrease_score_threshold
+        self.protect_window = protect_window
+        self.protect_avg_accepted_depth = protect_avg_accepted_depth
+        self.neutral_score_decay = neutral_score_decay
         self.reward_clip = reward_clip
 
         self.cycles = 0
         self.current_depth = initial_depth
-        self.accept_streak = 0
-        self.reject_streak = 0
+        self.score = 0.0
+        self.recent_accepted_depths: deque[int] = deque(
+            maxlen=protect_window
+        )
         self.last_accepted_depth: Optional[int] = None
         self.last_reward: Optional[float] = None
         self.counts = {
             depth: 0 for depth in range(min_depth, max_depth + 1)
         }
 
+    def _recent_accepted_depth_mean(self) -> Optional[float]:
+        if not self.recent_accepted_depths:
+            return None
+        return sum(self.recent_accepted_depths) / len(
+            self.recent_accepted_depths
+        )
+
     def _features(self, context_ratio: float) -> list[float]:
         return [
             float(self.current_depth),
-            float(self.accept_streak),
-            float(self.reject_streak),
+            float(self.score),
+            float(self._recent_accepted_depth_mean() or 0.0),
             min(1.0, max(0.0, context_ratio)),
         ]
 
@@ -128,45 +158,52 @@ class LocalStreakInitialDraftPolicy:
         accepted_depth = max(0, accepted_tokens - 1)
         self.last_accepted_depth = accepted_depth
         self.last_reward = reward
+        previous_recent_mean = self._recent_accepted_depth_mean() or 0.0
 
         if accepted_depth >= depth - 1:
-            self.accept_streak += 1
-            self.reject_streak = 0
+            self.score += self.high_score
         elif accepted_depth <= 1:
-            self.reject_streak += 1
-            self.accept_streak = 0
+            self.score -= self.low_penalty
         else:
-            self.accept_streak = 0
-            self.reject_streak = 0
+            self.score *= self.neutral_score_decay
 
-        if (
-            self.accept_streak >= self.increase_streak
-            and self.current_depth < self.max_depth
-        ):
-            self.current_depth += 1
-            self.accept_streak = 0
-            self.reject_streak = 0
+        if self.score >= self.increase_score_threshold:
+            if self.current_depth < self.max_depth:
+                self.current_depth += 1
+            self.score = 0.0
         elif (
-            self.reject_streak >= self.decrease_streak
+            self.score <= -self.decrease_score_threshold
             and self.current_depth > self.min_depth
         ):
-            self.current_depth -= 1
-            self.accept_streak = 0
-            self.reject_streak = 0
+            if previous_recent_mean >= self.protect_avg_accepted_depth:
+                self.score = -self.low_penalty
+            else:
+                self.current_depth -= 1
+                self.score = 0.0
 
+        self.recent_accepted_depths.append(accepted_depth)
         return reward
 
     def stats(self) -> dict:
+        recent_mean = self._recent_accepted_depth_mean()
         return {
             "cycles": self.cycles,
             "current_depth": self.current_depth,
             "initial_depth": self.initial_depth,
             "min_depth": self.min_depth,
             "max_depth": self.max_depth,
-            "increase_streak": self.increase_streak,
-            "decrease_streak": self.decrease_streak,
-            "accept_streak": self.accept_streak,
-            "reject_streak": self.reject_streak,
+            "score": self.score,
+            "high_score": self.high_score,
+            "low_penalty": self.low_penalty,
+            "increase_score_threshold": self.increase_score_threshold,
+            "decrease_score_threshold": self.decrease_score_threshold,
+            "protect_window": self.protect_window,
+            "protect_avg_accepted_depth": (
+                self.protect_avg_accepted_depth
+            ),
+            "neutral_score_decay": self.neutral_score_decay,
+            "recent_accepted_depth_mean": recent_mean,
+            "recent_accepted_depths": list(self.recent_accepted_depths),
             "last_accepted_depth": self.last_accepted_depth,
             "last_reward": self.last_reward,
             "counts": {
