@@ -411,6 +411,12 @@ class SpecEdgeBatchServerConfig(metaclass=_ConfigMeta):
         cls.simulated_latency_ms = float(
             cls._from_env_default("SPECEDGE_SIMULATED_LATENCY_MS", "0.0")
         )
+        cls.simulated_decode_latency_ms = float(
+            cls._from_env_default(
+                "SPECEDGE_SIMULATED_DECODE_LATENCY_MS",
+                "0.0",
+            )
+        )
 
         cls._initialized = True
 

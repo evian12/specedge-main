@@ -28,9 +28,11 @@ config/*
 !config/specedge_4090_jetson_no_proactive.yaml
 !config/server_only_4090.yaml
 !config/network_autoregressive_4090_jetson.yaml
+!config/network_autoregressive_4090_jetson_decode_lat100.yaml
 !config/specedge_4090_jetson_amd135m.yaml
 !config/specedge_4090_jetson_sequence_depth.yaml
 !config/specedge_4090_jetson_sequence_depth_replay.yaml
+!config/specedge_4090_jetson_sequence_depth_replay_next_decode_lat100.yaml
 !config/specedge_4090_jetson_sequence_depth_replay_next_lat100.yaml
 !config/distillation/
 !config/distillation/*.yaml

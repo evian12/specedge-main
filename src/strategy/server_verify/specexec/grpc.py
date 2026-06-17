@@ -406,6 +406,9 @@ class InferenceController:
                                         "simulated_latency_ms": (
                                             config.simulated_latency_ms
                                         ),
+                                        "simulated_decode_latency_ms": (
+                                            config.simulated_decode_latency_ms
+                                        ),
                                         "prefill": len(prefill_indices),
                                     }
                                 }
@@ -437,6 +440,9 @@ class InferenceController:
                             "forward_t": forward_t,
                             "server_end_to_end_t": inference_t.elapsed,
                             "simulated_latency_ms": config.simulated_latency_ms,
+                            "simulated_decode_latency_ms": (
+                                config.simulated_decode_latency_ms
+                            ),
                             "prefill": len(prefill_indices),
                         }
                     }
@@ -562,6 +568,8 @@ class InferenceController:
             )
 
         selection = util.sampler_from_logits(logits, temperature=self._temperature)
+        if config.simulated_decode_latency_ms > 0:
+            time.sleep(config.simulated_decode_latency_ms / 1000.0)
         if config.simulated_latency_ms > 0:
             time.sleep(config.simulated_latency_ms / 1000.0)
         for batch_idx, client_idx in enumerate(self._client_indices):

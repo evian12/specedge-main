@@ -72,6 +72,16 @@ def _load_config(config_file: Path):
     num_clients = config_yaml["server"]["num_clients"]
     cache_prefill = config_yaml["server"]["cache_prefill"]
     simulated_latency_ms = config_yaml["server"].get("simulated_latency_ms", 0.0)
+    simulated_decode_latency_ms = config_yaml["server"].get(
+        "simulated_decode_latency_ms",
+        0.0,
+    )
+    if simulated_latency_ms < 0.0:
+        raise ValueError("server.simulated_latency_ms must be non-negative")
+    if simulated_decode_latency_ms < 0.0:
+        raise ValueError(
+            "server.simulated_decode_latency_ms must be non-negative"
+        )
 
     os.environ["SPECEDGE_RESULT_PATH"] = result_path
     os.environ["SPECEDGE_EXP_NAME"] = exp_name
@@ -95,6 +105,9 @@ def _load_config(config_file: Path):
     os.environ["SPECEDGE_NUM_CLIENTS"] = str(num_clients)
     os.environ["SPECEDGE_CACHE_PREFILL"] = str(cache_prefill)
     os.environ["SPECEDGE_SIMULATED_LATENCY_MS"] = str(simulated_latency_ms)
+    os.environ["SPECEDGE_SIMULATED_DECODE_LATENCY_MS"] = str(
+        simulated_decode_latency_ms
+    )
 
     log_config = log.get_default_log_config(
         Path(config.result_path) / config.exp_name, "server"
@@ -117,6 +130,10 @@ def _load_config(config_file: Path):
     logger.debug("max_n_beams: %s", max_n_beams)
     logger.debug("max_budget: %s", max_budget)
     logger.debug("simulated_latency_ms: %s", simulated_latency_ms)
+    logger.debug(
+        "simulated_decode_latency_ms: %s",
+        simulated_decode_latency_ms,
+    )
     logger.info("Config loaded successfully.")
 
 

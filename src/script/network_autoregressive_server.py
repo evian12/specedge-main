@@ -36,6 +36,13 @@ class NetworkAutoregressiveService:
         self._dtype = util.convert_dtype(config["base"]["dtype"])
         self._model_name = config["server"]["target_model"]
         self._temperature = float(config["server"]["temperature"])
+        self._simulated_decode_latency_ms = float(
+            config["server"].get("simulated_decode_latency_ms", 0.0)
+        )
+        if self._simulated_decode_latency_ms < 0.0:
+            raise ValueError(
+                "server.simulated_decode_latency_ms must be non-negative"
+            )
         self._max_len = int(config["base"]["max_len"])
         self._seed = int(config["base"]["seed"])
         self._request_lock = asyncio.Lock()
@@ -120,6 +127,7 @@ class NetworkAutoregressiveService:
             current_token = input_ids[:, -1:]
             current_position = prompt_len - 1
             decode_times = []
+            model_decode_times = []
             generated_tokens = []
 
             for token_index in range(max_new_tokens):
@@ -155,9 +163,18 @@ class NetworkAutoregressiveService:
                         temperature=self._temperature,
                     ).reshape(1, 1)
 
+                if self._simulated_decode_latency_ms > 0.0:
+                    await asyncio.sleep(
+                        self._simulated_decode_latency_ms / 1000.0
+                    )
+
+                effective_decode_ms = (
+                    decode_t.elapsed + self._simulated_decode_latency_ms
+                )
                 token_id = int(next_token.item())
                 generated_tokens.append(token_id)
-                decode_times.append(decode_t.elapsed)
+                decode_times.append(effective_decode_ms)
+                model_decode_times.append(decode_t.elapsed)
                 eos = token_id == self._tokenizer.eos_token_id
                 server_elapsed_ms = (
                     time.perf_counter() - request_start
@@ -171,7 +188,11 @@ class NetworkAutoregressiveService:
                     "eos": eos,
                     "prompt_tokens": prompt_len,
                     "prefill_ms": prefill_t.elapsed,
-                    "decode_ms": decode_t.elapsed,
+                    "decode_ms": effective_decode_ms,
+                    "model_decode_ms": decode_t.elapsed,
+                    "simulated_decode_latency_ms": (
+                        self._simulated_decode_latency_ms
+                    ),
                     "server_elapsed_ms": server_elapsed_ms,
                 }
 
@@ -188,6 +209,10 @@ class NetworkAutoregressiveService:
                     "generated_tokens": len(generated_tokens),
                     "prefill_ms": prefill_t.elapsed,
                     "decode_ms": decode_times,
+                    "model_decode_ms": model_decode_times,
+                    "simulated_decode_latency_ms": (
+                        self._simulated_decode_latency_ms
+                    ),
                     "server_end_to_end_ms": (
                         time.perf_counter() - request_start
                     )

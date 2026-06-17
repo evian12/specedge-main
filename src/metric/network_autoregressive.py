@@ -59,6 +59,18 @@ def summarize(data_dir: Path) -> dict:
         for record in records
         for value in record["server_decode_ms"]
     ]
+    model_decode = [
+        float(value)
+        for record in records
+        for value in record.get(
+            "server_model_decode_ms",
+            record["server_decode_ms"],
+        )
+    ]
+    simulated_decode_latency = [
+        float(record.get("simulated_decode_latency_ms", 0.0))
+        for record in records
+    ]
     delivery = [
         float(value)
         for record in records
@@ -85,6 +97,8 @@ def summarize(data_dir: Path) -> dict:
             ]
         ),
         "server_decode_mean": mean(decode),
+        "server_model_decode_mean": mean(model_decode),
+        "simulated_decode_latency_mean": mean(simulated_decode_latency),
         "delivery_overhead_mean": mean(delivery),
     }
 
@@ -115,6 +129,8 @@ def main() -> None:
         "request p95",
         "server prefill",
         "server decode",
+        "model decode",
+        "sim decode",
         "delivery",
     ]
     rows = []
@@ -136,6 +152,8 @@ def main() -> None:
                 format_value(summary["request_p95"]),
                 format_value(summary["server_prefill_mean"]),
                 format_value(summary["server_decode_mean"]),
+                format_value(summary["server_model_decode_mean"]),
+                format_value(summary["simulated_decode_latency_mean"]),
                 format_value(summary["delivery_overhead_mean"]),
             ]
         )

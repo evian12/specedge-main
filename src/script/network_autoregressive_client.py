@@ -70,6 +70,7 @@ async def main() -> None:
             arrival_times = []
             server_elapsed_times = []
             decode_times = []
+            model_decode_times = []
             token_ids = []
             prefill_ms = None
             prompt_tokens = None
@@ -92,6 +93,14 @@ async def main() -> None:
                     float(response["server_elapsed_ms"])
                 )
                 decode_times.append(float(response["decode_ms"]))
+                model_decode_times.append(
+                    float(
+                        response.get(
+                            "model_decode_ms",
+                            response["decode_ms"],
+                        )
+                    )
+                )
                 token_ids.append(int(response["token_id"]))
                 prefill_ms = float(response["prefill_ms"])
                 prompt_tokens = int(response["prompt_tokens"])
@@ -140,6 +149,10 @@ async def main() -> None:
                     "delivery_overhead_ms": delivery_overhead_ms,
                     "server_prefill_ms": prefill_ms,
                     "server_decode_ms": decode_times,
+                    "server_model_decode_ms": model_decode_times,
+                    "simulated_decode_latency_ms": float(
+                        response.get("simulated_decode_latency_ms", 0.0)
+                    ),
                     "server_elapsed_ms": server_elapsed_times[-1],
                 }
             )

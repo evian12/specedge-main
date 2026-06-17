@@ -2,7 +2,7 @@ version: 1
 
 base:
   result_path: "result/4090_jetson"
-  exp_name: "network_autoregressive"
+  exp_name: "network_autoregressive_decode_lat100"
   dtype: fp16
   seed: 42
   ssh_key: ~/.ssh/id_ed25519
@@ -13,7 +13,7 @@ server:
   device: cuda:0
   temperature: 0.7
   port: 8002
-  simulated_decode_latency_ms: 0.0
+  simulated_decode_latency_ms: 100.0
 
 client:
   dataset: specbench
