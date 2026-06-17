@@ -39,17 +39,25 @@ client:
     reward_clip: 20.0
     local_streak:
       initial_depth: 3
-      min_depth: 2
+      min_depth: 1
       max_depth: 4
-      increase_streak: 2
-      decrease_streak: 2
-      high_score: 2.0
-      low_penalty: 1.0
-      increase_score_threshold: 3.0
-      decrease_score_threshold: 3.0
-      protect_window: 5
-      protect_avg_accepted_depth: 2.0
-      neutral_score_decay: 0.8
+      state_window_size: 5
+      very_slow_depth: 1
+      slow_depth: 2
+      mid_depth: 3
+      fast_depth: 4
+      very_slow_accept_threshold: 1.2
+      very_slow_depth_threshold: 0.2
+      very_slow_exit_accept_threshold: 1.4
+      enter_very_slow_votes: 2
+      fast_accept_threshold: 2.4
+      fast_depth_threshold: 2.0
+      slow_accept_threshold: 1.6
+      slow_depth_threshold: 0.6
+      enter_fast_votes: 2
+      enter_slow_votes: 2
+      fast_exit_accept_threshold: 2.0
+      slow_exit_accept_threshold: 1.8
   proactive:
     type: disabled
     mode: baseline

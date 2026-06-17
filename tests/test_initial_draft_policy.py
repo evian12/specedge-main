@@ -145,15 +145,25 @@ class LocalStreakInitialDraftPolicyTest(unittest.TestCase):
     def create_local_policy(self) -> LocalStreakInitialDraftPolicy:
         return LocalStreakInitialDraftPolicy(
             initial_depth=3,
-            min_depth=2,
+            min_depth=1,
             max_depth=4,
-            high_score=2.0,
-            low_penalty=1.0,
-            increase_score_threshold=3.0,
-            decrease_score_threshold=3.0,
-            protect_window=5,
-            protect_avg_accepted_depth=2.0,
-            neutral_score_decay=0.8,
+            state_window_size=5,
+            very_slow_depth=1,
+            slow_depth=2,
+            mid_depth=3,
+            fast_depth=4,
+            very_slow_accept_threshold=1.2,
+            very_slow_depth_threshold=0.2,
+            very_slow_exit_accept_threshold=1.4,
+            enter_very_slow_votes=2,
+            fast_accept_threshold=2.4,
+            fast_depth_threshold=2.0,
+            slow_accept_threshold=1.6,
+            slow_depth_threshold=0.6,
+            enter_fast_votes=2,
+            enter_slow_votes=2,
+            fast_exit_accept_threshold=2.0,
+            slow_exit_accept_threshold=1.8,
             reward_clip=20.0,
         )
 
@@ -183,9 +193,9 @@ class LocalStreakInitialDraftPolicyTest(unittest.TestCase):
         decision = policy.select_depth(context_ratio=0.25)
 
         self.assertEqual(decision.depth, 3)
-        self.assertEqual(decision.reason, "local_streak")
+        self.assertEqual(decision.reason, "local_state")
 
-    def test_local_streak_increases_after_strong_accepts(self):
+    def test_local_streak_enters_fast_after_strong_accepts(self):
         policy = self.create_local_policy()
 
         self.observe_local(policy, accepted_tokens=3)
@@ -193,29 +203,42 @@ class LocalStreakInitialDraftPolicyTest(unittest.TestCase):
         self.observe_local(policy, accepted_tokens=3)
 
         self.assertEqual(policy.current_depth, 4)
+        self.assertEqual(policy.stats()["state"], "fast")
 
-    def test_local_streak_decreases_after_repeated_shallow_accepts(self):
+    def test_local_streak_enters_slow_after_shallow_accepts(self):
         policy = self.create_local_policy()
 
         self.observe_local(policy, accepted_tokens=1)
         self.assertEqual(policy.current_depth, 3)
         self.observe_local(policy, accepted_tokens=2)
-        self.assertEqual(policy.current_depth, 3)
-        self.observe_local(policy, accepted_tokens=1)
-        self.assertEqual(policy.current_depth, 2)
 
-    def test_local_streak_protects_good_recent_history(self):
+        self.assertEqual(policy.current_depth, 2)
+        self.assertEqual(policy.stats()["state"], "slow")
+
+    def test_local_streak_enters_and_exits_very_slow(self):
         policy = self.create_local_policy()
 
-        for accepted_tokens in [4, 4, 4, 4, 4]:
-            self.observe_local(policy, accepted_tokens=accepted_tokens)
-        self.assertEqual(policy.current_depth, 4)
+        self.observe_local(policy, accepted_tokens=1)
+        self.assertEqual(policy.current_depth, 3)
+        self.observe_local(policy, accepted_tokens=1)
+        self.assertEqual(policy.current_depth, 1)
+        self.assertEqual(policy.stats()["state"], "very_slow")
+
+        self.observe_local(policy, accepted_tokens=2)
+        self.assertEqual(policy.current_depth, 2)
+        self.assertEqual(policy.stats()["state"], "slow")
+
+    def test_local_streak_fast_exits_to_mid_on_persistent_weak_accepts(self):
+        policy = self.create_local_policy()
 
         for _ in range(3):
+            self.observe_local(policy, accepted_tokens=4)
+        self.assertEqual(policy.current_depth, 4)
+
+        for _ in range(5):
             self.observe_local(policy, accepted_tokens=1)
 
-        self.assertEqual(policy.current_depth, 4)
-        self.assertLess(policy.score, 0.0)
+        self.assertLess(policy.current_depth, 4)
 
     def test_local_streak_respects_depth_bounds(self):
         policy = self.create_local_policy()
@@ -226,7 +249,7 @@ class LocalStreakInitialDraftPolicyTest(unittest.TestCase):
 
         for _ in range(12):
             self.observe_local(policy, accepted_tokens=1)
-        self.assertEqual(policy.current_depth, 2)
+        self.assertEqual(policy.current_depth, 1)
 
 
 if __name__ == "__main__":

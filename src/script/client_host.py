@@ -98,6 +98,55 @@ def main(config_file: str):
     initial_draft_local_neutral_score_decay = initial_draft_local.get(
         "neutral_score_decay", 0.8
     )
+    initial_draft_local_state_window_size = initial_draft_local.get(
+        "state_window_size", 5
+    )
+    initial_draft_local_very_slow_depth = initial_draft_local.get(
+        "very_slow_depth", 1
+    )
+    initial_draft_local_slow_depth = initial_draft_local.get(
+        "slow_depth", 2
+    )
+    initial_draft_local_mid_depth = initial_draft_local.get("mid_depth", 3)
+    initial_draft_local_fast_depth = initial_draft_local.get(
+        "fast_depth", 4
+    )
+    initial_draft_local_very_slow_accept_threshold = (
+        initial_draft_local.get("very_slow_accept_threshold", 1.2)
+    )
+    initial_draft_local_very_slow_depth_threshold = (
+        initial_draft_local.get("very_slow_depth_threshold", 0.2)
+    )
+    initial_draft_local_very_slow_exit_accept_threshold = (
+        initial_draft_local.get("very_slow_exit_accept_threshold", 1.4)
+    )
+    initial_draft_local_enter_very_slow_votes = initial_draft_local.get(
+        "enter_very_slow_votes", 2
+    )
+    initial_draft_local_fast_accept_threshold = initial_draft_local.get(
+        "fast_accept_threshold", 2.4
+    )
+    initial_draft_local_fast_depth_threshold = initial_draft_local.get(
+        "fast_depth_threshold", 2.0
+    )
+    initial_draft_local_slow_accept_threshold = initial_draft_local.get(
+        "slow_accept_threshold", 1.6
+    )
+    initial_draft_local_slow_depth_threshold = initial_draft_local.get(
+        "slow_depth_threshold", 0.6
+    )
+    initial_draft_local_enter_fast_votes = initial_draft_local.get(
+        "enter_fast_votes", 2
+    )
+    initial_draft_local_enter_slow_votes = initial_draft_local.get(
+        "enter_slow_votes", 2
+    )
+    initial_draft_local_fast_exit_accept_threshold = initial_draft_local.get(
+        "fast_exit_accept_threshold", 2.0
+    )
+    initial_draft_local_slow_exit_accept_threshold = initial_draft_local.get(
+        "slow_exit_accept_threshold", 1.8
+    )
     req_offset = config["client"]["req_offset"]
     sample_req_cnt = config["client"]["sample_req_cnt"]
     reasoning = config["client"]["reasoning"]
@@ -295,6 +344,60 @@ def main(config_file: str):
                 ),
                 "SPECEDGE_INITIAL_DRAFT_LOCAL_NEUTRAL_SCORE_DECAY": (
                     initial_draft_local_neutral_score_decay
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_STATE_WINDOW_SIZE": (
+                    initial_draft_local_state_window_size
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_VERY_SLOW_DEPTH": (
+                    initial_draft_local_very_slow_depth
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_SLOW_DEPTH": (
+                    initial_draft_local_slow_depth
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_MID_DEPTH": (
+                    initial_draft_local_mid_depth
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_FAST_DEPTH": (
+                    initial_draft_local_fast_depth
+                ),
+                (
+                    "SPECEDGE_INITIAL_DRAFT_LOCAL_"
+                    "VERY_SLOW_ACCEPT_THRESHOLD"
+                ): initial_draft_local_very_slow_accept_threshold,
+                (
+                    "SPECEDGE_INITIAL_DRAFT_LOCAL_"
+                    "VERY_SLOW_DEPTH_THRESHOLD"
+                ): initial_draft_local_very_slow_depth_threshold,
+                (
+                    "SPECEDGE_INITIAL_DRAFT_LOCAL_"
+                    "VERY_SLOW_EXIT_ACCEPT_THRESHOLD"
+                ): initial_draft_local_very_slow_exit_accept_threshold,
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_ENTER_VERY_SLOW_VOTES": (
+                    initial_draft_local_enter_very_slow_votes
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_FAST_ACCEPT_THRESHOLD": (
+                    initial_draft_local_fast_accept_threshold
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_FAST_DEPTH_THRESHOLD": (
+                    initial_draft_local_fast_depth_threshold
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_SLOW_ACCEPT_THRESHOLD": (
+                    initial_draft_local_slow_accept_threshold
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_SLOW_DEPTH_THRESHOLD": (
+                    initial_draft_local_slow_depth_threshold
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_ENTER_FAST_VOTES": (
+                    initial_draft_local_enter_fast_votes
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_ENTER_SLOW_VOTES": (
+                    initial_draft_local_enter_slow_votes
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_FAST_EXIT_ACCEPT_THRESHOLD": (
+                    initial_draft_local_fast_exit_accept_threshold
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_SLOW_EXIT_ACCEPT_THRESHOLD": (
+                    initial_draft_local_slow_exit_accept_threshold
                 ),
                 "SPECEDGE_PROACTIVE_TYPE": proactive_type,
                 "SPECEDGE_PROACTIVE_MODE": proactive_mode,

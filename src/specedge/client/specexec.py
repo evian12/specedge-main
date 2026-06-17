@@ -161,26 +161,48 @@ class SpecExecClient:
                 initial_depth=config.initial_draft_local_initial_depth,
                 min_depth=config.initial_draft_local_min_depth,
                 max_depth=config.initial_draft_local_max_depth,
-                high_score=(
-                    config.initial_draft_local_high_score
+                state_window_size=(
+                    config.initial_draft_local_state_window_size
                 ),
-                low_penalty=(
-                    config.initial_draft_local_low_penalty
+                very_slow_depth=config.initial_draft_local_very_slow_depth,
+                slow_depth=config.initial_draft_local_slow_depth,
+                mid_depth=config.initial_draft_local_mid_depth,
+                fast_depth=config.initial_draft_local_fast_depth,
+                very_slow_accept_threshold=(
+                    config.initial_draft_local_very_slow_accept_threshold
                 ),
-                increase_score_threshold=(
-                    config.initial_draft_local_increase_score_threshold
+                very_slow_depth_threshold=(
+                    config.initial_draft_local_very_slow_depth_threshold
                 ),
-                decrease_score_threshold=(
-                    config.initial_draft_local_decrease_score_threshold
+                very_slow_exit_accept_threshold=(
+                    config.initial_draft_local_very_slow_exit_accept_threshold
                 ),
-                protect_window=(
-                    config.initial_draft_local_protect_window
+                enter_very_slow_votes=(
+                    config.initial_draft_local_enter_very_slow_votes
                 ),
-                protect_avg_accepted_depth=(
-                    config.initial_draft_local_protect_avg_accepted_depth
+                fast_accept_threshold=(
+                    config.initial_draft_local_fast_accept_threshold
                 ),
-                neutral_score_decay=(
-                    config.initial_draft_local_neutral_score_decay
+                fast_depth_threshold=(
+                    config.initial_draft_local_fast_depth_threshold
+                ),
+                slow_accept_threshold=(
+                    config.initial_draft_local_slow_accept_threshold
+                ),
+                slow_depth_threshold=(
+                    config.initial_draft_local_slow_depth_threshold
+                ),
+                enter_fast_votes=(
+                    config.initial_draft_local_enter_fast_votes
+                ),
+                enter_slow_votes=(
+                    config.initial_draft_local_enter_slow_votes
+                ),
+                fast_exit_accept_threshold=(
+                    config.initial_draft_local_fast_exit_accept_threshold
+                ),
+                slow_exit_accept_threshold=(
+                    config.initial_draft_local_slow_exit_accept_threshold
                 ),
                 reward_clip=config.initial_draft_reward_clip,
             )
@@ -254,6 +276,82 @@ class SpecExecClient:
                 "initial_draft.local_streak.neutral_score_decay "
                 "must be in [0, 1]"
             )
+        if config.initial_draft_local_state_window_size <= 0:
+            raise ValueError(
+                "initial_draft.local_streak.state_window_size "
+                "must be positive"
+            )
+        for name, depth in [
+            ("very_slow_depth", config.initial_draft_local_very_slow_depth),
+            ("slow_depth", config.initial_draft_local_slow_depth),
+            ("mid_depth", config.initial_draft_local_mid_depth),
+            ("fast_depth", config.initial_draft_local_fast_depth),
+        ]:
+            if not (
+                config.initial_draft_local_min_depth
+                <= depth
+                <= config.initial_draft_local_max_depth
+            ):
+                raise ValueError(
+                    "initial_draft.local_streak."
+                    f"{name} must be in [min_depth, max_depth]"
+                )
+        for name, value in [
+            (
+                "very_slow_accept_threshold",
+                config.initial_draft_local_very_slow_accept_threshold,
+            ),
+            (
+                "very_slow_depth_threshold",
+                config.initial_draft_local_very_slow_depth_threshold,
+            ),
+            (
+                "very_slow_exit_accept_threshold",
+                config.initial_draft_local_very_slow_exit_accept_threshold,
+            ),
+            (
+                "fast_accept_threshold",
+                config.initial_draft_local_fast_accept_threshold,
+            ),
+            (
+                "fast_depth_threshold",
+                config.initial_draft_local_fast_depth_threshold,
+            ),
+            (
+                "slow_accept_threshold",
+                config.initial_draft_local_slow_accept_threshold,
+            ),
+            (
+                "slow_depth_threshold",
+                config.initial_draft_local_slow_depth_threshold,
+            ),
+            (
+                "fast_exit_accept_threshold",
+                config.initial_draft_local_fast_exit_accept_threshold,
+            ),
+            (
+                "slow_exit_accept_threshold",
+                config.initial_draft_local_slow_exit_accept_threshold,
+            ),
+        ]:
+            if value < 0.0:
+                raise ValueError(
+                    "initial_draft.local_streak."
+                    f"{name} must be non-negative"
+                )
+        for name, value in [
+            (
+                "enter_very_slow_votes",
+                config.initial_draft_local_enter_very_slow_votes,
+            ),
+            ("enter_fast_votes", config.initial_draft_local_enter_fast_votes),
+            ("enter_slow_votes", config.initial_draft_local_enter_slow_votes),
+        ]:
+            if value <= 0:
+                raise ValueError(
+                    "initial_draft.local_streak."
+                    f"{name} must be positive"
+                )
         if self._proactive_type not in ["included", "excluded", "disabled"]:
             raise ValueError(f"Invalid proactive_type: {self._proactive_type}")
         if self._proactive_mode not in [

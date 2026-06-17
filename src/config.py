@@ -231,6 +231,111 @@ class SpecEdgeClientConfig(metaclass=_ConfigMeta):
                 "0.8",
             )
         )
+        cls.initial_draft_local_state_window_size = int(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_STATE_WINDOW_SIZE",
+                "5",
+            )
+        )
+        cls.initial_draft_local_very_slow_depth = int(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_VERY_SLOW_DEPTH",
+                "1",
+            )
+        )
+        cls.initial_draft_local_slow_depth = int(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_SLOW_DEPTH",
+                "2",
+            )
+        )
+        cls.initial_draft_local_mid_depth = int(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_MID_DEPTH",
+                "3",
+            )
+        )
+        cls.initial_draft_local_fast_depth = int(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_FAST_DEPTH",
+                "4",
+            )
+        )
+        cls.initial_draft_local_very_slow_accept_threshold = float(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_VERY_SLOW_ACCEPT_THRESHOLD",
+                "1.2",
+            )
+        )
+        cls.initial_draft_local_very_slow_depth_threshold = float(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_VERY_SLOW_DEPTH_THRESHOLD",
+                "0.2",
+            )
+        )
+        cls.initial_draft_local_very_slow_exit_accept_threshold = float(
+            cls._from_env_default(
+                (
+                    "SPECEDGE_INITIAL_DRAFT_LOCAL_"
+                    "VERY_SLOW_EXIT_ACCEPT_THRESHOLD"
+                ),
+                "1.4",
+            )
+        )
+        cls.initial_draft_local_enter_very_slow_votes = int(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_ENTER_VERY_SLOW_VOTES",
+                "2",
+            )
+        )
+        cls.initial_draft_local_fast_accept_threshold = float(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_FAST_ACCEPT_THRESHOLD",
+                "2.4",
+            )
+        )
+        cls.initial_draft_local_fast_depth_threshold = float(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_FAST_DEPTH_THRESHOLD",
+                "2.0",
+            )
+        )
+        cls.initial_draft_local_slow_accept_threshold = float(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_SLOW_ACCEPT_THRESHOLD",
+                "1.6",
+            )
+        )
+        cls.initial_draft_local_slow_depth_threshold = float(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_SLOW_DEPTH_THRESHOLD",
+                "0.6",
+            )
+        )
+        cls.initial_draft_local_enter_fast_votes = int(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_ENTER_FAST_VOTES",
+                "2",
+            )
+        )
+        cls.initial_draft_local_enter_slow_votes = int(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_ENTER_SLOW_VOTES",
+                "2",
+            )
+        )
+        cls.initial_draft_local_fast_exit_accept_threshold = float(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_FAST_EXIT_ACCEPT_THRESHOLD",
+                "2.0",
+            )
+        )
+        cls.initial_draft_local_slow_exit_accept_threshold = float(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_SLOW_EXIT_ACCEPT_THRESHOLD",
+                "1.8",
+            )
+        )
 
         # proactive draft configuration
         cls.proactive_type = cls._from_env("SPECEDGE_PROACTIVE_TYPE")
