@@ -11,6 +11,7 @@ from config import SpecEdgeClientConfig as config
 from specedge.client.initial_draft_policy import (
     InitialDraftDecision,
     LinUCBInitialDraftPolicy,
+    LocalStreakInitialDraftPolicy,
     initial_depth_after_proactive_reuse,
 )
 from specedge.client.proactive import (
@@ -86,7 +87,9 @@ class SpecExecClient:
 
         self._proactive_client: Optional[SpecExecProactiveDraft] = None
         self._adaptive_policy: Optional[AdaptiveProactivePolicy] = None
-        self._initial_draft_policy: Optional[LinUCBInitialDraftPolicy] = None
+        self._initial_draft_policy: Optional[
+            LinUCBInitialDraftPolicy | LocalStreakInitialDraftPolicy
+        ] = None
         self._previous_proactive_draft = False
         self._proactive_draft = False
         self._reused_proactive_depth = 0
@@ -153,9 +156,26 @@ class SpecExecClient:
             self._initial_draft_policy = (
                 SpecExecClient._shared_initial_draft_policy
             )
+        elif self._initial_draft_mode == "local_streak":
+            self._initial_draft_policy = LocalStreakInitialDraftPolicy(
+                initial_depth=config.initial_draft_local_initial_depth,
+                min_depth=config.initial_draft_local_min_depth,
+                max_depth=config.initial_draft_local_max_depth,
+                increase_streak=(
+                    config.initial_draft_local_increase_streak
+                ),
+                decrease_streak=(
+                    config.initial_draft_local_decrease_streak
+                ),
+                reward_clip=config.initial_draft_reward_clip,
+            )
 
     def _verify_configs(self):
-        if self._initial_draft_mode not in ["fixed", "linucb"]:
+        if self._initial_draft_mode not in [
+            "fixed",
+            "linucb",
+            "local_streak",
+        ]:
             raise ValueError(
                 f"Invalid initial_draft mode: {self._initial_draft_mode}"
             )
@@ -163,6 +183,29 @@ class SpecExecClient:
             raise ValueError(
                 "Invalid initial_draft structure: "
                 f"{self._initial_draft_structure}"
+            )
+        if (
+            config.initial_draft_local_min_depth <= 0
+            or config.initial_draft_local_max_depth
+            < config.initial_draft_local_min_depth
+            or config.initial_draft_local_max_depth > self._max_beam_len
+            or not (
+                config.initial_draft_local_min_depth
+                <= config.initial_draft_local_initial_depth
+                <= config.initial_draft_local_max_depth
+            )
+        ):
+            raise ValueError(
+                "initial_draft.local_streak depths must satisfy "
+                "0 < min_depth <= initial_depth <= max_depth <= max_beam_len"
+            )
+        if config.initial_draft_local_increase_streak <= 0:
+            raise ValueError(
+                "initial_draft.local_streak.increase_streak must be positive"
+            )
+        if config.initial_draft_local_decrease_streak <= 0:
+            raise ValueError(
+                "initial_draft.local_streak.decrease_streak must be positive"
             )
         if self._proactive_type not in ["included", "excluded", "disabled"]:
             raise ValueError(f"Invalid proactive_type: {self._proactive_type}")

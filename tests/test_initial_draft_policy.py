@@ -3,6 +3,7 @@ import unittest
 from specedge.client.initial_draft_policy import (
     InitialDraftDecision,
     LinUCBInitialDraftPolicy,
+    LocalStreakInitialDraftPolicy,
     initial_depth_after_proactive_reuse,
 )
 
@@ -138,6 +139,75 @@ class LinUCBInitialDraftPolicyTest(unittest.TestCase):
 
         self.assertEqual(remaining, 0)
         self.assertEqual(reused, 3)
+
+
+class LocalStreakInitialDraftPolicyTest(unittest.TestCase):
+    def create_local_policy(self) -> LocalStreakInitialDraftPolicy:
+        return LocalStreakInitialDraftPolicy(
+            initial_depth=3,
+            min_depth=2,
+            max_depth=4,
+            increase_streak=2,
+            decrease_streak=2,
+            reward_clip=20.0,
+        )
+
+    def observe_local(
+        self,
+        policy: LocalStreakInitialDraftPolicy,
+        accepted_tokens: int,
+    ) -> InitialDraftDecision:
+        decision = policy.select_depth(context_ratio=0.0)
+        policy.observe(
+            decision=decision,
+            accepted_tokens=accepted_tokens,
+            cycle_ms=100.0,
+            draft_ms=10.0,
+            response_ms=50.0,
+            node_count=4,
+            max_budget=8,
+            proactive_hit=False,
+            proactive_depth=0,
+            proactive_max_depth=0,
+        )
+        return decision
+
+    def test_local_streak_starts_from_configured_depth(self):
+        policy = self.create_local_policy()
+
+        decision = policy.select_depth(context_ratio=0.25)
+
+        self.assertEqual(decision.depth, 3)
+        self.assertEqual(decision.reason, "local_streak")
+
+    def test_local_streak_increases_after_consecutive_deep_accepts(self):
+        policy = self.create_local_policy()
+
+        self.observe_local(policy, accepted_tokens=3)
+        self.assertEqual(policy.current_depth, 3)
+        self.observe_local(policy, accepted_tokens=3)
+
+        self.assertEqual(policy.current_depth, 4)
+
+    def test_local_streak_decreases_after_consecutive_shallow_accepts(self):
+        policy = self.create_local_policy()
+
+        self.observe_local(policy, accepted_tokens=1)
+        self.assertEqual(policy.current_depth, 3)
+        self.observe_local(policy, accepted_tokens=2)
+
+        self.assertEqual(policy.current_depth, 2)
+
+    def test_local_streak_respects_depth_bounds(self):
+        policy = self.create_local_policy()
+
+        for _ in range(6):
+            self.observe_local(policy, accepted_tokens=5)
+        self.assertEqual(policy.current_depth, 4)
+
+        for _ in range(6):
+            self.observe_local(policy, accepted_tokens=1)
+        self.assertEqual(policy.current_depth, 2)
 
 
 if __name__ == "__main__":

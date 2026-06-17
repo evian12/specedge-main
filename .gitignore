@@ -32,6 +32,7 @@ config/*
 !config/specedge_4090_jetson_amd135m.yaml
 !config/specedge_4090_jetson_sequence_depth.yaml
 !config/specedge_4090_jetson_sequence_depth_replay.yaml
+!config/specedge_4090_jetson_sequence_local_depth_decode_lat100.yaml
 !config/specedge_4090_jetson_sequence_depth_replay_next_decode_lat100.yaml
 !config/specedge_4090_jetson_sequence_depth_replay_next_lat100.yaml
 !config/distillation/

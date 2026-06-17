@@ -159,6 +159,36 @@ class SpecEdgeClientConfig(metaclass=_ConfigMeta):
                 "SPECEDGE_INITIAL_DRAFT_EWMA_ALPHA", "0.2"
             )
         )
+        cls.initial_draft_local_initial_depth = int(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_INITIAL_DEPTH",
+                str(cls.max_beam_len),
+            )
+        )
+        cls.initial_draft_local_min_depth = int(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_MIN_DEPTH",
+                "1",
+            )
+        )
+        cls.initial_draft_local_max_depth = int(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_MAX_DEPTH",
+                str(cls.max_beam_len),
+            )
+        )
+        cls.initial_draft_local_increase_streak = int(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_INCREASE_STREAK",
+                "2",
+            )
+        )
+        cls.initial_draft_local_decrease_streak = int(
+            cls._from_env_default(
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_DECREASE_STREAK",
+                "2",
+            )
+        )
 
         # proactive draft configuration
         cls.proactive_type = cls._from_env("SPECEDGE_PROACTIVE_TYPE")

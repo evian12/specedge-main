@@ -1,0 +1,69 @@
+version: 1
+opt: 2
+
+base:
+  result_path: "result/4090_jetson"
+  exp_name: "specedge_sequence_local_depth_decode_lat100"
+  dtype: fp16
+  seed: 42
+  ssh_key: ~/.ssh/id_ed25519
+  max_len: 2048
+
+server:
+  process_name: server
+  target_model: /home/yypan/models/Llama-2-7b-chat-hf
+  device: cuda:0
+  temperature: 0.7
+  max_batch_size: 1
+  num_clients: 1
+  batch_type: static
+  cache_prefill: true
+  simulated_latency_ms: 0.0
+  simulated_decode_latency_ms: 100.0
+
+client:
+  host: 127.0.0.1:18001
+  process_name: client
+  draft_model: /home/yypan/models/AMD-Llama-135m-replay-gain-round2
+  dataset: specbench
+  reasoning: false
+  sample_req_cnt: 60
+  req_offset: 0
+  max_n_beams: 1
+  max_beam_len: 4
+  max_branch_width: 1
+  max_budget: 8
+  initial_draft:
+    mode: local_streak
+    structure: sequence
+    reward_clip: 20.0
+    local_streak:
+      initial_depth: 3
+      min_depth: 2
+      max_depth: 4
+      increase_streak: 2
+      decrease_streak: 2
+  proactive:
+    type: disabled
+    mode: baseline
+    path_policy: sequence_depth
+    max_n_beams: 8
+    max_beam_len: 3
+    max_branch_width: 1
+    max_budget: 24
+    sequence:
+      acceptance_survival:
+        [1.0, 0.5720, 0.3488, 0.2205, 0.1529, 0.1094, 0.0807, 0.0600]
+      max_bonus_per_depth: 4
+      max_roots: 6
+      min_root_probability: 0.0
+      min_bonus_probability: 0.02
+      selection_score: expected_reuse
+      reuse_depth_bonus: 0.3
+      depth_probability_coverage: [1.0, 0.8, 0.5]
+  max_new_tokens: 64
+  max_request_num: -1
+
+node:
+  jetson:
+    - device: cuda:0

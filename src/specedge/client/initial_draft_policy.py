@@ -36,6 +36,146 @@ class InitialDraftDecision:
     scores: dict[int, float]
 
 
+class LocalStreakInitialDraftPolicy:
+    """Per-request draft depth control driven by recent accepted depth."""
+
+    feature_names = [
+        "current_depth",
+        "accept_streak",
+        "reject_streak",
+        "context_ratio",
+    ]
+
+    def __init__(
+        self,
+        *,
+        initial_depth: int,
+        min_depth: int,
+        max_depth: int,
+        increase_streak: int,
+        decrease_streak: int,
+        reward_clip: float,
+    ) -> None:
+        if min_depth <= 0:
+            raise ValueError("min_depth must be positive")
+        if max_depth < min_depth:
+            raise ValueError("max_depth must be >= min_depth")
+        if not min_depth <= initial_depth <= max_depth:
+            raise ValueError("initial_depth must be in [min_depth, max_depth]")
+        if increase_streak <= 0:
+            raise ValueError("increase_streak must be positive")
+        if decrease_streak <= 0:
+            raise ValueError("decrease_streak must be positive")
+        if reward_clip <= 0.0:
+            raise ValueError("reward_clip must be positive")
+
+        self.initial_depth = initial_depth
+        self.min_depth = min_depth
+        self.max_depth = max_depth
+        self.increase_streak = increase_streak
+        self.decrease_streak = decrease_streak
+        self.reward_clip = reward_clip
+
+        self.cycles = 0
+        self.current_depth = initial_depth
+        self.accept_streak = 0
+        self.reject_streak = 0
+        self.last_accepted_depth: Optional[int] = None
+        self.last_reward: Optional[float] = None
+        self.counts = {
+            depth: 0 for depth in range(min_depth, max_depth + 1)
+        }
+
+    def _features(self, context_ratio: float) -> list[float]:
+        return [
+            float(self.current_depth),
+            float(self.accept_streak),
+            float(self.reject_streak),
+            min(1.0, max(0.0, context_ratio)),
+        ]
+
+    def select_depth(self, context_ratio: float) -> InitialDraftDecision:
+        self.cycles += 1
+        return InitialDraftDecision(
+            depth=self.current_depth,
+            reason="local_streak",
+            features=self._features(context_ratio),
+            scores={},
+        )
+
+    def observe(
+        self,
+        decision: InitialDraftDecision,
+        accepted_tokens: int,
+        cycle_ms: float,
+        draft_ms: float,
+        response_ms: Optional[float],
+        node_count: int,
+        max_budget: int,
+        proactive_hit: bool,
+        proactive_depth: int,
+        proactive_max_depth: int,
+    ) -> float:
+        if cycle_ms <= 0.0:
+            raise ValueError("cycle_ms must be positive")
+
+        reward = min(
+            self.reward_clip,
+            max(0.0, 1000.0 * accepted_tokens / cycle_ms),
+        )
+        depth = decision.depth
+        self.counts[depth] = self.counts.get(depth, 0) + 1
+        accepted_depth = max(0, accepted_tokens - 1)
+        self.last_accepted_depth = accepted_depth
+        self.last_reward = reward
+
+        if accepted_depth >= depth - 1:
+            self.accept_streak += 1
+            self.reject_streak = 0
+        elif accepted_depth <= 1:
+            self.reject_streak += 1
+            self.accept_streak = 0
+        else:
+            self.accept_streak = 0
+            self.reject_streak = 0
+
+        if (
+            self.accept_streak >= self.increase_streak
+            and self.current_depth < self.max_depth
+        ):
+            self.current_depth += 1
+            self.accept_streak = 0
+            self.reject_streak = 0
+        elif (
+            self.reject_streak >= self.decrease_streak
+            and self.current_depth > self.min_depth
+        ):
+            self.current_depth -= 1
+            self.accept_streak = 0
+            self.reject_streak = 0
+
+        return reward
+
+    def stats(self) -> dict:
+        return {
+            "cycles": self.cycles,
+            "current_depth": self.current_depth,
+            "initial_depth": self.initial_depth,
+            "min_depth": self.min_depth,
+            "max_depth": self.max_depth,
+            "increase_streak": self.increase_streak,
+            "decrease_streak": self.decrease_streak,
+            "accept_streak": self.accept_streak,
+            "reject_streak": self.reject_streak,
+            "last_accepted_depth": self.last_accepted_depth,
+            "last_reward": self.last_reward,
+            "counts": {
+                str(depth): count
+                for depth, count in sorted(self.counts.items())
+            },
+        }
+
+
 class LinUCBInitialDraftPolicy:
     """Online initial-draft depth selection with disjoint LinUCB models."""
 

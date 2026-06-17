@@ -63,6 +63,20 @@ def main(config_file: str):
     initial_draft_ridge_lambda = initial_draft.get("ridge_lambda", 1.0)
     initial_draft_reward_clip = initial_draft.get("reward_clip", 20.0)
     initial_draft_ewma_alpha = initial_draft.get("ewma_alpha", 0.2)
+    initial_draft_local = initial_draft.get("local_streak", {})
+    initial_draft_local_initial_depth = initial_draft_local.get(
+        "initial_depth", max_beam_len
+    )
+    initial_draft_local_min_depth = initial_draft_local.get("min_depth", 1)
+    initial_draft_local_max_depth = initial_draft_local.get(
+        "max_depth", max_beam_len
+    )
+    initial_draft_local_increase_streak = initial_draft_local.get(
+        "increase_streak", 2
+    )
+    initial_draft_local_decrease_streak = initial_draft_local.get(
+        "decrease_streak", 2
+    )
     req_offset = config["client"]["req_offset"]
     sample_req_cnt = config["client"]["sample_req_cnt"]
     reasoning = config["client"]["reasoning"]
@@ -224,6 +238,21 @@ def main(config_file: str):
                 ),
                 "SPECEDGE_INITIAL_DRAFT_EWMA_ALPHA": (
                     initial_draft_ewma_alpha
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_INITIAL_DEPTH": (
+                    initial_draft_local_initial_depth
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_MIN_DEPTH": (
+                    initial_draft_local_min_depth
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_MAX_DEPTH": (
+                    initial_draft_local_max_depth
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_INCREASE_STREAK": (
+                    initial_draft_local_increase_streak
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_DECREASE_STREAK": (
+                    initial_draft_local_decrease_streak
                 ),
                 "SPECEDGE_PROACTIVE_TYPE": proactive_type,
                 "SPECEDGE_PROACTIVE_MODE": proactive_mode,
