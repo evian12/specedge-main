@@ -101,6 +101,9 @@ def select_sequence_bonus_candidates(
     max_bonus_per_depth: int,
     max_roots: int,
     min_root_probability: float,
+    min_bonus_probability: float = 0.0,
+    selection_score: str = "joint",
+    reuse_depth_bonus: float = 0.0,
 ) -> list[ProactiveRootCandidate]:
     """Select bonus roots across all possible stopping depths of one path."""
     depth_count = path_node_indices.numel()
@@ -112,6 +115,12 @@ def select_sequence_bonus_candidates(
         )
     if bonus_token_ids.size(0) != depth_count:
         raise ValueError("bonus token rows must match the sequence path")
+    if min_bonus_probability < 0.0:
+        raise ValueError("min_bonus_probability must be non-negative")
+    if reuse_depth_bonus < 0.0:
+        raise ValueError("reuse_depth_bonus must be non-negative")
+    if selection_score not in ["joint", "expected_reuse"]:
+        raise ValueError("selection_score must be 'joint' or 'expected_reuse'")
 
     available_bonus = min(
         max_bonus_per_depth,
@@ -125,32 +134,46 @@ def select_sequence_bonus_candidates(
     )
 
     candidates: list[ProactiveRootCandidate] = []
+    scored_candidates: list[tuple[float, ProactiveRootCandidate]] = []
     for depth, count in enumerate(counts):
         stop_probability = stop_probabilities[depth]
         for bonus_rank in range(count):
             bonus_probability = float(
                 bonus_logprobs[depth, bonus_rank].exp().item()
             )
+            if bonus_probability < min_bonus_probability:
+                continue
             joint_probability = stop_probability * bonus_probability
             if joint_probability < min_root_probability:
                 continue
-            candidates.append(
-                ProactiveRootCandidate(
-                    leaf_idx=int(path_node_indices[depth].item()),
-                    token_id=int(
-                        bonus_token_ids[depth, bonus_rank].item()
-                    ),
-                    leaf_probability=stop_probability,
-                    bonus_probability=bonus_probability,
-                    joint_probability=joint_probability,
-                    stop_depth=depth,
-                )
+            candidate = ProactiveRootCandidate(
+                leaf_idx=int(path_node_indices[depth].item()),
+                token_id=int(
+                    bonus_token_ids[depth, bonus_rank].item()
+                ),
+                leaf_probability=stop_probability,
+                bonus_probability=bonus_probability,
+                joint_probability=joint_probability,
+                stop_depth=depth,
             )
+            if selection_score == "expected_reuse":
+                reusable_tail = max(0, depth_count - depth - 1)
+                score = joint_probability * (
+                    1.0 + reuse_depth_bonus * reusable_tail
+                )
+            else:
+                score = joint_probability
+            scored_candidates.append((score, candidate))
 
-    candidates.sort(
-        key=lambda candidate: candidate.joint_probability,
+    scored_candidates.sort(
+        key=lambda item: (
+            item[0],
+            item[1].joint_probability,
+            item[1].bonus_probability,
+        ),
         reverse=True,
     )
+    candidates = [candidate for _, candidate in scored_candidates]
     return candidates[:max_roots]
 
 

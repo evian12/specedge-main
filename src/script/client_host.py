@@ -127,6 +127,15 @@ def main(config_file: str):
     proactive_sequence_min_root_probability = proactive_sequence.get(
         "min_root_probability", 0.0
     )
+    proactive_sequence_min_bonus_probability = proactive_sequence.get(
+        "min_bonus_probability", 0.0
+    )
+    proactive_sequence_selection_score = proactive_sequence.get(
+        "selection_score", "joint"
+    )
+    proactive_sequence_reuse_depth_bonus = proactive_sequence.get(
+        "reuse_depth_bonus", 0.0
+    )
     proactive_sequence_depth_probability_coverage = (
         proactive_sequence.get(
             "depth_probability_coverage", [1.0, 0.8, 0.5]
@@ -136,6 +145,9 @@ def main(config_file: str):
     proactive_adaptive_ewma_alpha = proactive_adaptive.get("ewma_alpha", 0.2)
     proactive_adaptive_min_alignment_rate = proactive_adaptive.get(
         "min_alignment_rate", 0.1
+    )
+    proactive_adaptive_low_alignment_depth = proactive_adaptive.get(
+        "low_alignment_depth", 0
     )
     proactive_adaptive_warmup_cycles = proactive_adaptive.get("warmup_cycles", 4)
     proactive_adaptive_exploration_interval = proactive_adaptive.get(
@@ -255,6 +267,15 @@ def main(config_file: str):
                 "SPECEDGE_PROACTIVE_SEQUENCE_MIN_ROOT_PROBABILITY": (
                     proactive_sequence_min_root_probability
                 ),
+                "SPECEDGE_PROACTIVE_SEQUENCE_MIN_BONUS_PROBABILITY": (
+                    proactive_sequence_min_bonus_probability
+                ),
+                "SPECEDGE_PROACTIVE_SEQUENCE_SELECTION_SCORE": (
+                    proactive_sequence_selection_score
+                ),
+                "SPECEDGE_PROACTIVE_SEQUENCE_REUSE_DEPTH_BONUS": (
+                    proactive_sequence_reuse_depth_bonus
+                ),
                 "SPECEDGE_PROACTIVE_SEQUENCE_DEPTH_PROBABILITY_COVERAGE": json.dumps(
                     proactive_sequence_depth_probability_coverage
                 ),
@@ -267,6 +288,9 @@ def main(config_file: str):
                 ),
                 "SPECEDGE_PROACTIVE_ADAPTIVE_MIN_ALIGNMENT_RATE": (
                     proactive_adaptive_min_alignment_rate
+                ),
+                "SPECEDGE_PROACTIVE_ADAPTIVE_LOW_ALIGNMENT_DEPTH": (
+                    proactive_adaptive_low_alignment_depth
                 ),
                 "SPECEDGE_PROACTIVE_ADAPTIVE_WARMUP_CYCLES": (
                     proactive_adaptive_warmup_cycles

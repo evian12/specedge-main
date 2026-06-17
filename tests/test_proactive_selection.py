@@ -162,6 +162,48 @@ class ProactiveSelectionTest(unittest.TestCase):
         self.assertEqual(by_depth[1], [200])
         self.assertEqual(by_depth[2], [300])
 
+    def test_sequence_expected_reuse_score_prefers_reusable_tail(self):
+        candidates = select_sequence_bonus_candidates(
+            torch.tensor([10, 11, 12]),
+            [0.3, 0.3, 0.3],
+            torch.tensor(
+                [
+                    [100],
+                    [200],
+                    [300],
+                ]
+            ),
+            torch.tensor(
+                [
+                    [0.7],
+                    [0.7],
+                    [0.7],
+                ]
+            ).log(),
+            max_bonus_per_depth=1,
+            max_roots=1,
+            min_root_probability=0.0,
+            selection_score="expected_reuse",
+            reuse_depth_bonus=0.5,
+        )
+
+        self.assertEqual(candidates[0].stop_depth, 0)
+        self.assertEqual(candidates[0].token_id, 100)
+
+    def test_sequence_candidates_filter_low_bonus_probability(self):
+        candidates = select_sequence_bonus_candidates(
+            torch.tensor([10]),
+            [1.0],
+            torch.tensor([[100, 101]]),
+            torch.tensor([[0.8, 0.2]]).log(),
+            max_bonus_per_depth=2,
+            max_roots=2,
+            min_root_probability=0.0,
+            min_bonus_probability=0.5,
+        )
+
+        self.assertEqual([candidate.token_id for candidate in candidates], [100])
+
     def test_main_sequence_uses_best_deepest_leaf(self):
         path = trace_main_sequence_nodes(
             torch.tensor([4, 5, 6]),

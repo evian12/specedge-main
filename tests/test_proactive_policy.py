@@ -8,6 +8,7 @@ def create_policy(
     max_depth: int = 3,
     alpha: float = 1.0,
     min_alignment_rate: float = 0.1,
+    low_alignment_depth: int = 0,
     warmup_cycles: int = 0,
     exploration_interval: int = 8,
     safety_margin_ms: float = 5.0,
@@ -17,6 +18,7 @@ def create_policy(
         max_depth=max_depth,
         ewma_alpha=alpha,
         min_alignment_rate=min_alignment_rate,
+        low_alignment_depth=low_alignment_depth,
         warmup_cycles=warmup_cycles,
         exploration_interval=exploration_interval,
         safety_margin_ms=safety_margin_ms,
@@ -136,6 +138,20 @@ class AdaptiveProactivePolicyTest(unittest.TestCase):
             policy.begin_cycle(),
             (3, "alignment_exploration"),
         )
+
+    def test_low_alignment_can_keep_shallow_exploration(self):
+        policy = create_policy(
+            min_alignment_rate=0.5,
+            low_alignment_depth=1,
+            exploration_interval=4,
+        )
+        policy.observe_cycle(
+            response_ms=100.0,
+            aligned=False,
+            proactive_executed=True,
+        )
+
+        self.assertEqual(policy.begin_cycle(), (1, "low_alignment_limited"))
 
 
 if __name__ == "__main__":

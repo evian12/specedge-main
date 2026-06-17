@@ -425,6 +425,15 @@ class SpecExecProactiveDraft:
         self._sequence_min_root_probability = (
             config.proactive_sequence_min_root_probability
         )
+        self._sequence_min_bonus_probability = (
+            config.proactive_sequence_min_bonus_probability
+        )
+        self._sequence_selection_score = (
+            config.proactive_sequence_selection_score
+        )
+        self._sequence_reuse_depth_bonus = (
+            config.proactive_sequence_reuse_depth_bonus
+        )
         self._last_sequence_path_depth: Optional[int] = None
         self._last_sequence_stop_probabilities: list[float] = []
         if self._path_policy == "sequence_depth":
@@ -546,6 +555,11 @@ class SpecExecProactiveDraft:
                 min_root_probability=(
                     self._sequence_min_root_probability
                 ),
+                min_bonus_probability=(
+                    self._sequence_min_bonus_probability
+                ),
+                selection_score=self._sequence_selection_score,
+                reuse_depth_bonus=self._sequence_reuse_depth_bonus,
             )
             selected_depths = {
                 candidate.stop_depth for candidate in candidates

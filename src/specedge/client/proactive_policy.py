@@ -81,6 +81,7 @@ class AdaptiveProactivePolicy:
         exploration_interval: int,
         safety_margin_ms: float,
         uncertainty_scale: float,
+        low_alignment_depth: int = 0,
     ) -> None:
         if max_depth < 0:
             raise ValueError("max_depth must be non-negative")
@@ -88,6 +89,8 @@ class AdaptiveProactivePolicy:
             raise ValueError("ewma_alpha must be in (0, 1]")
         if not 0.0 <= min_alignment_rate <= 1.0:
             raise ValueError("min_alignment_rate must be in [0, 1]")
+        if not 0 <= low_alignment_depth <= max_depth:
+            raise ValueError("low_alignment_depth must be in [0, max_depth]")
         if warmup_cycles < 0:
             raise ValueError("warmup_cycles must be non-negative")
         if safety_margin_ms < 0.0:
@@ -98,6 +101,7 @@ class AdaptiveProactivePolicy:
         self._max_depth = max_depth
         self._alpha = ewma_alpha
         self._min_alignment_rate = min_alignment_rate
+        self._low_alignment_depth = low_alignment_depth
         self._warmup_cycles = warmup_cycles
         self._exploration_interval = exploration_interval
         self._safety_margin_ms = safety_margin_ms
@@ -133,6 +137,8 @@ class AdaptiveProactivePolicy:
                 and self.cycles % self._exploration_interval == 0
             )
             if not is_exploration:
+                if self._low_alignment_depth > 0:
+                    return self._low_alignment_depth, "low_alignment_limited"
                 return 0, "low_alignment_rate"
             return self._max_depth, "alignment_exploration"
 
@@ -272,4 +278,5 @@ class AdaptiveProactivePolicy:
             },
             "alignment_rate_ewma": self.alignment_rate_ewma,
             "uncertainty_scale": self._uncertainty_scale,
+            "low_alignment_depth": self._low_alignment_depth,
         }

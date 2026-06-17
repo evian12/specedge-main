@@ -122,6 +122,9 @@ class SpecExecClient:
                     uncertainty_scale=(
                         config.proactive_adaptive_uncertainty_scale
                     ),
+                    low_alignment_depth=(
+                        config.proactive_adaptive_low_alignment_depth
+                    ),
                 )
             self._adaptive_policy = SpecExecClient._shared_adaptive_policy
         if self._initial_draft_mode == "linucb":
@@ -257,6 +260,22 @@ class SpecExecClient:
             raise ValueError(
                 "sequence.min_root_probability must be non-negative"
             )
+        if config.proactive_sequence_min_bonus_probability < 0.0:
+            raise ValueError(
+                "sequence.min_bonus_probability must be non-negative"
+            )
+        if config.proactive_sequence_selection_score not in [
+            "joint",
+            "expected_reuse",
+        ]:
+            raise ValueError(
+                "sequence.selection_score must be 'joint' or "
+                "'expected_reuse'"
+            )
+        if config.proactive_sequence_reuse_depth_bonus < 0.0:
+            raise ValueError(
+                "sequence.reuse_depth_bonus must be non-negative"
+            )
         sequence_coverage = (
             config.proactive_sequence_depth_probability_coverage
         )
@@ -278,6 +297,15 @@ class SpecExecClient:
             raise ValueError(
                 "sequence.depth_probability_coverage must be "
                 "non-increasing"
+            )
+        if not (
+            0
+            <= config.proactive_adaptive_low_alignment_depth
+            <= config.proactive_max_beam_len
+        ):
+            raise ValueError(
+                "adaptive.low_alignment_depth must be in "
+                "[0, proactive.max_beam_len]"
             )
 
     async def _run_proactive_draft(

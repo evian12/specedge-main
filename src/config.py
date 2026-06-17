@@ -252,6 +252,22 @@ class SpecEdgeClientConfig(metaclass=_ConfigMeta):
                 "0.0",
             )
         )
+        cls.proactive_sequence_min_bonus_probability = float(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_SEQUENCE_MIN_BONUS_PROBABILITY",
+                "0.0",
+            )
+        )
+        cls.proactive_sequence_selection_score = cls._from_env_default(
+            "SPECEDGE_PROACTIVE_SEQUENCE_SELECTION_SCORE",
+            "joint",
+        )
+        cls.proactive_sequence_reuse_depth_bonus = float(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_SEQUENCE_REUSE_DEPTH_BONUS",
+                "0.0",
+            )
+        )
         cls.proactive_sequence_depth_probability_coverage = [
             float(value)
             for value in json.loads(
@@ -267,6 +283,11 @@ class SpecEdgeClientConfig(metaclass=_ConfigMeta):
         cls.proactive_adaptive_min_alignment_rate = float(
             cls._from_env_default(
                 "SPECEDGE_PROACTIVE_ADAPTIVE_MIN_ALIGNMENT_RATE", "0.1"
+            )
+        )
+        cls.proactive_adaptive_low_alignment_depth = int(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_ADAPTIVE_LOW_ALIGNMENT_DEPTH", "0"
             )
         )
         cls.proactive_adaptive_warmup_cycles = int(
