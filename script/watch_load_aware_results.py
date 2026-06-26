@@ -244,10 +244,22 @@ def _generate_report(summary_csv: Path, timeline_jsonl: Path, report_md: Path) -
     report_md.write_text("\n".join(lines), encoding="utf-8")
 
 
-def _summarize(result_root: Path, summary_csv: Path, timeline_jsonl: Path, report_md: Path) -> None:
+def _summarize(
+    result_root: Path,
+    summary_csv: Path,
+    timeline_jsonl: Path,
+    report_md: Path,
+    expected_count: int,
+) -> None:
     data_dirs = sorted(path for path in result_root.glob("loadaware_*") if path.is_dir())
     if not data_dirs:
         raise RuntimeError(f"No loadaware result directories found under {result_root}")
+    if expected_count > 0 and len(data_dirs) < expected_count:
+        raise RuntimeError(
+            f"Only found {len(data_dirs)} load-aware result directories under "
+            f"{result_root}; expected at least {expected_count}. "
+            "The matrix probably stopped early. Inspect result/load_aware_runs/*.log."
+        )
     labels = [path.name for path in data_dirs]
     cmd = [
         "python",
@@ -277,6 +289,7 @@ def main() -> None:
     parser.add_argument("--summary-csv", default="results/load_aware_summary.csv")
     parser.add_argument("--timeline", default="results/load_aware_timeline.jsonl")
     parser.add_argument("--report-md", default="results/load_aware_report.md")
+    parser.add_argument("--expected-count", type=int, default=44)
     parser.add_argument("--no-wait", action="store_true")
     args = parser.parse_args()
 
@@ -300,6 +313,7 @@ def main() -> None:
         ROOT / args.summary_csv,
         ROOT / args.timeline,
         ROOT / args.report_md,
+        args.expected_count,
     )
 
 

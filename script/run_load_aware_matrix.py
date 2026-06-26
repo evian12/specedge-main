@@ -161,19 +161,19 @@ def run_config(config: Path, warmup_seconds: int, client_node: str, ssh_key: str
         )
         subprocess.run([client_script, "-f", str(config)], cwd=ROOT, check=True)
         result.mkdir(parents=True, exist_ok=True)
-        for prefix in ("client_0", "network_ar_client_0"):
-            subprocess.run(
-                [
-                    "rsync",
-                    "-a",
-                    "-e",
-                    f"ssh -i {ssh_key} -o StrictHostKeyChecking=no",
-                    f"{client_node}:~/specedge/result/4090_jetson/{name}/{prefix}.*",
-                    f"result/4090_jetson/{name}/",
-                ],
-                cwd=ROOT,
-                check=False,
-            )
+        prefix = "network_ar_client_0" if is_streaming_ar(config) else "client_0"
+        subprocess.run(
+            [
+                "rsync",
+                "-a",
+                "-e",
+                f"ssh -i {ssh_key} -o StrictHostKeyChecking=no",
+                f"{client_node}:~/specedge/result/4090_jetson/{name}/{prefix}.*",
+                f"result/4090_jetson/{name}/",
+            ],
+            cwd=ROOT,
+            check=True,
+        )
     finally:
         subprocess.run(f"kill -- -{server.pid} 2>/dev/null || true", shell=True)
         try:
