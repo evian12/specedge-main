@@ -1,0 +1,29 @@
+version: 1
+
+base:
+  result_path: "result/4090_jetson"
+  exp_name: "network_autoregressive_decode_lat200"
+  dtype: fp16
+  seed: 42
+  ssh_key: ~/.ssh/id_ed25519
+  max_len: 2048
+
+server:
+  target_model: /home/yypan/models/Llama-2-7b-chat-hf
+  device: cuda:0
+  temperature: 0.7
+  port: 8002
+  simulated_decode_latency_ms: 200.0
+
+client:
+  dataset: specbench
+  reasoning: false
+  sample_req_cnt: 8
+  req_offset: 0
+  max_new_tokens: 64
+  max_request_num: -1
+  tunnel_port: 18002
+
+node:
+  jetson:
+    - device: cuda:0

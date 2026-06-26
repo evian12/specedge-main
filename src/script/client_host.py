@@ -48,24 +48,13 @@ def main(config_file: str):
     initial_draft = config["client"].get("initial_draft", {})
     initial_draft_mode = initial_draft.get("mode", "fixed")
     initial_draft_structure = initial_draft.get("structure", "tree")
-    initial_draft_candidate_depths = initial_draft.get(
-        "candidate_depths", [max_beam_len]
-    )
-    initial_draft_warmup_per_depth = initial_draft.get(
-        "warmup_per_depth", 4
-    )
-    initial_draft_exploration_weight = initial_draft.get(
-        "exploration_weight", 0.3
-    )
-    initial_draft_forced_exploration_interval = initial_draft.get(
-        "forced_exploration_interval", 32
-    )
-    initial_draft_ridge_lambda = initial_draft.get("ridge_lambda", 1.0)
     initial_draft_reward_clip = initial_draft.get("reward_clip", 20.0)
-    initial_draft_ewma_alpha = initial_draft.get("ewma_alpha", 0.2)
     initial_draft_local = initial_draft.get("local_streak", {})
     initial_draft_local_initial_depth = initial_draft_local.get(
         "initial_depth", max_beam_len
+    )
+    initial_draft_local_controller = initial_draft_local.get(
+        "controller", "state"
     )
     initial_draft_local_min_depth = initial_draft_local.get("min_depth", 1)
     initial_draft_local_max_depth = initial_draft_local.get(
@@ -150,6 +139,25 @@ def main(config_file: str):
     req_offset = config["client"]["req_offset"]
     sample_req_cnt = config["client"]["sample_req_cnt"]
     reasoning = config["client"]["reasoning"]
+    decoding = config["client"].get("decoding", {})
+    decode_mode = decoding.get("mode", config.get("mode", "specedge"))
+    adaptive_mode = decoding.get(
+        "adaptive_mode",
+        config.get("adaptive_mode", decode_mode == "adaptive"),
+    )
+    switch_threshold_ms = decoding.get(
+        "switch_threshold_ms",
+        config.get("switch_threshold_ms", 50.0),
+    )
+    decision_window = decoding.get(
+        "decision_window",
+        config.get("decision_window", 16),
+    )
+    estimator_alpha = decoding.get(
+        "estimator_alpha",
+        config.get("estimator_alpha", 0.2),
+    )
+    adaptive_initial_mode = decoding.get("initial_mode", "specedge")
 
     logger.debug("draft_model: %s", draft_model)
     logger.debug("target_model: %s", target_model)
@@ -169,6 +177,9 @@ def main(config_file: str):
     proactive_mode = config["client"]["proactive"].get("mode", "baseline")
     proactive_path_policy = config["client"]["proactive"].get(
         "path_policy", "single_best"
+    )
+    proactive_reuse_refill = config["client"]["proactive"].get(
+        "reuse_refill", False
     )
     proactive_multi = config["client"]["proactive"].get("multi", {})
     proactive_multi_max_deepest_leaves = proactive_multi.get(
@@ -196,6 +207,76 @@ def main(config_file: str):
     proactive_multi_depth_probability_coverage = proactive_multi.get(
         "depth_probability_coverage", [1.0, 0.8, 0.5]
     )
+    proactive_multi_root_depth_mode = proactive_multi.get(
+        "root_depth_mode", "uniform"
+    )
+    proactive_multi_root_depth_floor = proactive_multi.get(
+        "root_depth_floor", 1
+    )
+    proactive_multi_root_depth_gamma = proactive_multi.get(
+        "root_depth_gamma", 0.5
+    )
+    proactive_multi_root_depth_secondary_cap = proactive_multi.get(
+        "root_depth_secondary_cap", 0
+    )
+    proactive_multi_dynamic = proactive_multi.get("dynamic_roots", {})
+    proactive_multi_dynamic_enabled = proactive_multi_dynamic.get(
+        "enabled", False
+    )
+    proactive_multi_dynamic_mode = proactive_multi_dynamic.get(
+        "mode", "threshold"
+    )
+    proactive_multi_dynamic_high_threshold = proactive_multi_dynamic.get(
+        "high_threshold", 0.7
+    )
+    proactive_multi_dynamic_mid_threshold = proactive_multi_dynamic.get(
+        "mid_threshold", 0.4
+    )
+    proactive_multi_dynamic_high_roots = proactive_multi_dynamic.get(
+        "high_roots", 1
+    )
+    proactive_multi_dynamic_mid_roots = proactive_multi_dynamic.get(
+        "mid_roots", 2
+    )
+    proactive_multi_dynamic_low_roots = proactive_multi_dynamic.get(
+        "low_roots", proactive_multi_max_roots
+    )
+    proactive_multi_dynamic_marginal_min_gain = proactive_multi_dynamic.get(
+        "marginal_min_gain", 0.35
+    )
+    proactive_multi_dynamic_high_latency_marginal_min_gain = (
+        proactive_multi_dynamic.get(
+            "high_latency_marginal_min_gain",
+            proactive_multi_dynamic_marginal_min_gain,
+        )
+    )
+    proactive_multi_dynamic_marginal_cost_weight = (
+        proactive_multi_dynamic.get("marginal_cost_weight", 0.5)
+    )
+    proactive_multi_dynamic_marginal_confidence_penalty = (
+        proactive_multi_dynamic.get("marginal_confidence_penalty", 0.5)
+    )
+    proactive_multi_dynamic_online_alpha = proactive_multi_dynamic.get(
+        "online_alpha", 0.15
+    )
+    proactive_multi_dynamic_online_warmup_cycles = (
+        proactive_multi_dynamic.get("online_warmup_cycles", 64)
+    )
+    proactive_multi_dynamic_online_exploration_interval = (
+        proactive_multi_dynamic.get("online_exploration_interval", 16)
+    )
+    proactive_multi_dynamic_online_min_reward = (
+        proactive_multi_dynamic.get("online_min_reward", 0.30)
+    )
+    proactive_multi_dynamic_response_aware_min_reward_ms = (
+        proactive_multi_dynamic.get("response_aware_min_reward_ms", 0.0)
+    )
+    proactive_multi_dynamic_high_latency_online_min_reward = (
+        proactive_multi_dynamic.get(
+            "high_latency_online_min_reward",
+            proactive_multi_dynamic_online_min_reward,
+        )
+    )
     proactive_sequence = config["client"]["proactive"].get(
         "sequence", {}
     )
@@ -214,11 +295,32 @@ def main(config_file: str):
     proactive_sequence_min_bonus_probability = proactive_sequence.get(
         "min_bonus_probability", 0.0
     )
+    proactive_sequence_min_stop_depth = proactive_sequence.get(
+        "min_stop_depth", 0
+    )
     proactive_sequence_selection_score = proactive_sequence.get(
         "selection_score", "joint"
     )
     proactive_sequence_reuse_depth_bonus = proactive_sequence.get(
         "reuse_depth_bonus", 0.0
+    )
+    proactive_sequence_stop_ewma_alpha = proactive_sequence.get(
+        "stop_ewma_alpha", 0.0
+    )
+    proactive_sequence_min_initial_depth = proactive_sequence.get(
+        "min_initial_depth", 0
+    )
+    proactive_sequence_multipos_min_path_depth = proactive_sequence.get(
+        "multipos_min_path_depth", 0
+    )
+    proactive_sequence_multipos_min_response_ms = proactive_sequence.get(
+        "multipos_min_response_ms", 0.0
+    )
+    proactive_sequence_anchor_deepest_roots = proactive_sequence.get(
+        "anchor_deepest_roots", False
+    )
+    proactive_sequence_quota_mode = proactive_sequence.get(
+        "quota_mode", "all"
     )
     proactive_sequence_depth_probability_coverage = (
         proactive_sequence.get(
@@ -242,6 +344,9 @@ def main(config_file: str):
     )
     proactive_adaptive_uncertainty_scale = proactive_adaptive.get(
         "uncertainty_scale", 1.0
+    )
+    proactive_adaptive_layer_deadline_mode = proactive_adaptive.get(
+        "layer_deadline_mode", "per_layer"
     )
 
     logger.debug("proactive_type: %s", proactive_type)
@@ -288,29 +393,14 @@ def main(config_file: str):
                 "SPECEDGE_INITIAL_DRAFT_STRUCTURE": (
                     initial_draft_structure
                 ),
-                "SPECEDGE_INITIAL_DRAFT_CANDIDATE_DEPTHS": json.dumps(
-                    initial_draft_candidate_depths
-                ),
-                "SPECEDGE_INITIAL_DRAFT_WARMUP_PER_DEPTH": (
-                    initial_draft_warmup_per_depth
-                ),
-                "SPECEDGE_INITIAL_DRAFT_EXPLORATION_WEIGHT": (
-                    initial_draft_exploration_weight
-                ),
-                "SPECEDGE_INITIAL_DRAFT_FORCED_EXPLORATION_INTERVAL": (
-                    initial_draft_forced_exploration_interval
-                ),
-                "SPECEDGE_INITIAL_DRAFT_RIDGE_LAMBDA": (
-                    initial_draft_ridge_lambda
-                ),
                 "SPECEDGE_INITIAL_DRAFT_REWARD_CLIP": (
                     initial_draft_reward_clip
                 ),
-                "SPECEDGE_INITIAL_DRAFT_EWMA_ALPHA": (
-                    initial_draft_ewma_alpha
-                ),
                 "SPECEDGE_INITIAL_DRAFT_LOCAL_INITIAL_DEPTH": (
                     initial_draft_local_initial_depth
+                ),
+                "SPECEDGE_INITIAL_DRAFT_LOCAL_CONTROLLER": (
+                    initial_draft_local_controller
                 ),
                 "SPECEDGE_INITIAL_DRAFT_LOCAL_MIN_DEPTH": (
                     initial_draft_local_min_depth
@@ -402,6 +492,7 @@ def main(config_file: str):
                 "SPECEDGE_PROACTIVE_TYPE": proactive_type,
                 "SPECEDGE_PROACTIVE_MODE": proactive_mode,
                 "SPECEDGE_PROACTIVE_PATH_POLICY": proactive_path_policy,
+                "SPECEDGE_PROACTIVE_REUSE_REFILL": proactive_reuse_refill,
                 "SPECEDGE_PROACTIVE_MULTI_MAX_DEEPEST_LEAVES": (
                     proactive_multi_max_deepest_leaves
                 ),
@@ -429,6 +520,72 @@ def main(config_file: str):
                 "SPECEDGE_PROACTIVE_MULTI_DEPTH_PROBABILITY_COVERAGE": json.dumps(
                     proactive_multi_depth_probability_coverage
                 ),
+                "SPECEDGE_PROACTIVE_MULTI_ROOT_DEPTH_MODE": (
+                    proactive_multi_root_depth_mode
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_ROOT_DEPTH_FLOOR": (
+                    proactive_multi_root_depth_floor
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_ROOT_DEPTH_GAMMA": (
+                    proactive_multi_root_depth_gamma
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_ROOT_DEPTH_SECONDARY_CAP": (
+                    proactive_multi_root_depth_secondary_cap
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_ROOTS": (
+                    proactive_multi_dynamic_enabled
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_MODE": (
+                    proactive_multi_dynamic_mode
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_HIGH_THRESHOLD": (
+                    proactive_multi_dynamic_high_threshold
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_MID_THRESHOLD": (
+                    proactive_multi_dynamic_mid_threshold
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_HIGH_ROOTS": (
+                    proactive_multi_dynamic_high_roots
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_MID_ROOTS": (
+                    proactive_multi_dynamic_mid_roots
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_LOW_ROOTS": (
+                    proactive_multi_dynamic_low_roots
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_MARGINAL_MIN_GAIN": (
+                    proactive_multi_dynamic_marginal_min_gain
+                ),
+                (
+                    "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_"
+                    "HIGH_LATENCY_MARGINAL_MIN_GAIN"
+                ): proactive_multi_dynamic_high_latency_marginal_min_gain,
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_MARGINAL_COST_WEIGHT": (
+                    proactive_multi_dynamic_marginal_cost_weight
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_MARGINAL_CONFIDENCE_PENALTY": (
+                    proactive_multi_dynamic_marginal_confidence_penalty
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_ONLINE_ALPHA": (
+                    proactive_multi_dynamic_online_alpha
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_ONLINE_WARMUP_CYCLES": (
+                    proactive_multi_dynamic_online_warmup_cycles
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_ONLINE_EXPLORATION_INTERVAL": (
+                    proactive_multi_dynamic_online_exploration_interval
+                ),
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_ONLINE_MIN_REWARD": (
+                    proactive_multi_dynamic_online_min_reward
+                ),
+                (
+                    "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_"
+                    "RESPONSE_AWARE_MIN_REWARD_MS"
+                ): proactive_multi_dynamic_response_aware_min_reward_ms,
+                (
+                    "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_"
+                    "HIGH_LATENCY_ONLINE_MIN_REWARD"
+                ): proactive_multi_dynamic_high_latency_online_min_reward,
                 "SPECEDGE_PROACTIVE_SEQUENCE_ACCEPTANCE_SURVIVAL": json.dumps(
                     proactive_sequence_acceptance_survival
                 ),
@@ -444,11 +601,32 @@ def main(config_file: str):
                 "SPECEDGE_PROACTIVE_SEQUENCE_MIN_BONUS_PROBABILITY": (
                     proactive_sequence_min_bonus_probability
                 ),
+                "SPECEDGE_PROACTIVE_SEQUENCE_MIN_STOP_DEPTH": (
+                    proactive_sequence_min_stop_depth
+                ),
                 "SPECEDGE_PROACTIVE_SEQUENCE_SELECTION_SCORE": (
                     proactive_sequence_selection_score
                 ),
                 "SPECEDGE_PROACTIVE_SEQUENCE_REUSE_DEPTH_BONUS": (
                     proactive_sequence_reuse_depth_bonus
+                ),
+                "SPECEDGE_PROACTIVE_SEQUENCE_STOP_EWMA_ALPHA": (
+                    proactive_sequence_stop_ewma_alpha
+                ),
+                "SPECEDGE_PROACTIVE_SEQUENCE_MIN_INITIAL_DEPTH": (
+                    proactive_sequence_min_initial_depth
+                ),
+                "SPECEDGE_PROACTIVE_SEQUENCE_MULTIPOS_MIN_PATH_DEPTH": (
+                    proactive_sequence_multipos_min_path_depth
+                ),
+                "SPECEDGE_PROACTIVE_SEQUENCE_MULTIPOS_MIN_RESPONSE_MS": (
+                    proactive_sequence_multipos_min_response_ms
+                ),
+                "SPECEDGE_PROACTIVE_SEQUENCE_ANCHOR_DEEPEST_ROOTS": (
+                    proactive_sequence_anchor_deepest_roots
+                ),
+                "SPECEDGE_PROACTIVE_SEQUENCE_QUOTA_MODE": (
+                    proactive_sequence_quota_mode
                 ),
                 "SPECEDGE_PROACTIVE_SEQUENCE_DEPTH_PROBABILITY_COVERAGE": json.dumps(
                     proactive_sequence_depth_probability_coverage
@@ -478,10 +656,19 @@ def main(config_file: str):
                 "SPECEDGE_PROACTIVE_ADAPTIVE_UNCERTAINTY_SCALE": (
                     proactive_adaptive_uncertainty_scale
                 ),
+                "SPECEDGE_PROACTIVE_ADAPTIVE_LAYER_DEADLINE_MODE": (
+                    proactive_adaptive_layer_deadline_mode
+                ),
                 "SPECEDGE_MAX_NEW_TOKENS": max_new_tokens,
                 "SPECEDGE_MAX_REQUEST_NUM": max_request_num,
                 "SPECEDGE_REQ_OFFSET": req_offset,
                 "SPECEDGE_SAMPLE_REQ_CNT": sample_req_cnt,
+                "SPECEDGE_DECODE_MODE": decode_mode,
+                "SPECEDGE_ADAPTIVE_MODE": adaptive_mode,
+                "SPECEDGE_SWITCH_THRESHOLD_MS": switch_threshold_ms,
+                "SPECEDGE_DECISION_WINDOW": decision_window,
+                "SPECEDGE_ESTIMATOR_ALPHA": estimator_alpha,
+                "SPECEDGE_ADAPTIVE_INITIAL_MODE": adaptive_initial_mode,
                 "SPECEDGE_HOST": host,
                 "SPECEDGE_CLIENT_IDX": client_idx,
                 "SPECEDGE_REASONING": reasoning,

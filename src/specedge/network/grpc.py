@@ -1,10 +1,15 @@
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 import grpc.aio
 import torch
 
+from specedge.network.json_grpc import (
+    STREAM_METHOD,
+    deserialize_json,
+    serialize_json,
+)
 from specedge_grpc import specedge_pb2, specedge_pb2_grpc
 from util import decode, encode
 
@@ -15,6 +20,15 @@ class ValidationResponse:
     prefill: int
     received_at: float
     decoded_at: float
+    queue_wait_ms: float
+    server_compute_ms: float
+    server_response_ms: float
+    decode_ms: float
+    model_decode_ms: float
+    prefill_ms: float
+    batch_size: int
+    queue_length: int
+    background_arrival_rate: float
 
 
 class GrpcClientController:
@@ -25,6 +39,11 @@ class GrpcClientController:
         self._device = device
         self._channel = grpc.aio.insecure_channel(self._host)
         self._stub = specedge_pb2_grpc.SpecEdgeServiceStub(self._channel)
+        self._stream_generate = self._channel.unary_stream(
+            STREAM_METHOD,
+            request_serializer=serialize_json,
+            response_deserializer=deserialize_json,
+        )
 
     async def request(
         self,
@@ -72,4 +91,21 @@ class GrpcClientController:
             prefill=resp.prefill,
             received_at=received_at,
             decoded_at=time.perf_counter(),
+            queue_wait_ms=resp.queue_wait_ms,
+            server_compute_ms=resp.server_compute_ms,
+            server_response_ms=resp.server_response_ms,
+            decode_ms=resp.decode_ms,
+            model_decode_ms=resp.model_decode_ms,
+            prefill_ms=resp.prefill_ms,
+            batch_size=resp.batch_size,
+            queue_length=resp.queue_length,
+            background_arrival_rate=resp.background_arrival_rate,
         )
+
+    def stream_generate(
+        self,
+        request: dict,
+        *,
+        timeout: Optional[float] = None,
+    ) -> AsyncIterator[dict]:
+        return self._stream_generate(request, timeout=timeout)

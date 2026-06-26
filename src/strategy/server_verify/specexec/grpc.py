@@ -1,17 +1,22 @@
 import asyncio
+from dataclasses import dataclass, field
+import heapq
 import hashlib
 import multiprocessing as mp
 import os
 import queue
+import random
 import threading
 import time
 from pathlib import Path
+from typing import Optional
 
 import torch
 from rich.progress import track
 
 import log
 import util
+from specedge.network.json_grpc import deserialize_json, serialize_json
 from config import SpecEdgeBatchServerConfig as config
 from specedge.engine.graph import BatchGraphEngine
 from specedge_grpc import specedge_pb2, specedge_pb2_grpc
@@ -20,6 +25,26 @@ from strategy.server_verify.specexec.padding import (
     copy_padded_attention_mask,
     validate_draft_request_shapes,
 )
+
+
+@dataclass
+class _BackgroundRequestState:
+    slot_idx: int
+    req_idx: int
+    prefix: str
+    remaining_tokens: int
+    current_token_id: int
+    current_position: int
+    ready_time: float
+    prefilled: bool = False
+    in_flight: bool = False
+
+
+@dataclass(order=True)
+class _QueuedRequest:
+    arrival_time: float
+    sequence_number: int
+    request: specedge_pb2.ValidateRequest = field(compare=False)
 
 
 class SpecExecBatchServer(specedge_pb2_grpc.SpecEdgeServiceServicer):
@@ -42,6 +67,7 @@ class SpecExecBatchServer(specedge_pb2_grpc.SpecEdgeServiceServicer):
 
         self._resp_futures = {}
         self._resp_lock = threading.Lock()
+        self._stream_tokenizer = None
 
         self._resp_queue_task = self._loop.create_task(self._init_resp_queue_loop())
         self._init_inference_loop()
@@ -93,14 +119,183 @@ class SpecExecBatchServer(specedge_pb2_grpc.SpecEdgeServiceServicer):
 
     async def Validate(self, request, context):
         self._logger.info("Received request: %s", request.client_idx)
+        selection, prefill_cnt, metadata = await self._submit_validate_request(request)
+        return specedge_pb2.ValidateResponse(
+            selection=selection,
+            prefill=prefill_cnt,
+            queue_wait_ms=float(metadata.get("queue_wait_ms", 0.0)),
+            server_compute_ms=float(metadata.get("server_compute_ms", 0.0)),
+            server_response_ms=float(metadata.get("server_response_ms", 0.0)),
+            decode_ms=float(metadata.get("decode_ms", 0.0)),
+            model_decode_ms=float(metadata.get("model_decode_ms", 0.0)),
+            prefill_ms=float(metadata.get("prefill_ms", 0.0)),
+            batch_size=int(metadata.get("batch_size", 0)),
+            queue_length=int(metadata.get("queue_length", 0)),
+            background_arrival_rate=float(
+                metadata.get("background_arrival_rate", 0.0)
+            ),
+        )
+
+    async def _submit_validate_request(self, request):
         fut = asyncio.Future()
 
         with self._resp_lock:
             self._resp_futures[request.client_idx] = fut
 
-        self._recv_queue.put(request.SerializeToString())
-        selection, prefill_cnt = await asyncio.wait_for(fut, timeout=120.0)
-        return specedge_pb2.ValidateResponse(selection=selection, prefill=prefill_cnt)
+        self._recv_queue.put((time.perf_counter(), request.SerializeToString()))
+        response = await asyncio.wait_for(
+            fut, timeout=config.validate_timeout_s
+        )
+        if len(response) == 2:
+            selection, prefill_cnt = response
+            metadata = {}
+        else:
+            selection, prefill_cnt, metadata = response
+        return selection, prefill_cnt, metadata
+
+    def _get_stream_tokenizer(self):
+        if self._stream_tokenizer is None:
+            self._stream_tokenizer = util.load_tokenizer(config.target_model)
+        return self._stream_tokenizer
+
+    def _build_stream_ar_request(
+        self,
+        *,
+        client_idx: int,
+        req_idx: int,
+        token_id: int,
+        position: int,
+        prefill: bool,
+        prefix: Optional[str],
+    ) -> specedge_pb2.ValidateRequest:
+        input_ids = torch.tensor([[token_id]], dtype=torch.long)
+        position_ids = torch.tensor([[position]], dtype=torch.long)
+        cache_seq_indices = torch.tensor([position], dtype=torch.long)
+        parent_indices = torch.empty((0,), dtype=torch.long)
+        attention_mask = torch.zeros(
+            (1, 1, 1, config.max_len),
+            dtype=config.dtype,
+        )
+        attention_mask[..., : position + 1] = 1.0
+        return specedge_pb2.ValidateRequest(
+            client_idx=client_idx,
+            req_idx=req_idx,
+            input_ids=util.encode(input_ids),
+            position_ids=util.encode(position_ids),
+            cache_seq_indices=util.encode(cache_seq_indices),
+            parent_indices=util.encode(parent_indices),
+            attention_mask=util.encode(attention_mask),
+            prefill=prefill,
+            prefix=prefix if prefill else None,
+        )
+
+    async def StreamGenerate(self, request: dict, context):
+        """Streaming AR path backed by the shared batch inference controller.
+
+        The client sends one request and receives generated tokens over the
+        same stream. Internally each decode step still enters the unified FCFS
+        scheduler, so foreground streaming AR competes with background and
+        SpecEdge verify work on the same target model instance.
+        """
+
+        tokenizer = self._get_stream_tokenizer()
+        client_idx = int(request["client_idx"])
+        req_idx = int(request["req_idx"])
+        prompt = str(request["prompt"])
+        max_new_tokens = int(request["max_new_tokens"])
+        if not 0 < max_new_tokens < config.max_len:
+            raise ValueError(
+                "max_new_tokens must be greater than zero and smaller than max_len"
+            )
+
+        stream_start = time.perf_counter()
+        should_prefill = bool(request.get("prefill", True))
+        if should_prefill:
+            input_ids = tokenizer.encode(prompt, return_tensors="pt")
+            max_prompt_len = max(1, config.max_len - max_new_tokens)
+            input_ids = input_ids[:, -max_prompt_len:]
+            prompt_len = int(input_ids.size(-1))
+            current_token_id = int(input_ids[0, -1].item())
+            current_position = prompt_len - 1
+        else:
+            if "current_token_id" not in request or "current_position" not in request:
+                raise ValueError(
+                    "current_token_id and current_position are required when "
+                    "streaming AR starts without prefill"
+                )
+            current_token_id = int(request["current_token_id"])
+            current_position = int(request["current_position"])
+            prompt_len = int(request.get("prompt_tokens", current_position + 1))
+        generated_tokens = 0
+        decode_times: list[float] = []
+        response_times: list[float] = []
+
+        for token_index in range(max_new_tokens):
+            step_request = self._build_stream_ar_request(
+                client_idx=client_idx,
+                req_idx=req_idx,
+                token_id=current_token_id,
+                position=current_position,
+                prefill=should_prefill and token_index == 0,
+                prefix=prompt if should_prefill and token_index == 0 else None,
+            )
+            step_start = time.perf_counter()
+            selection, _, metadata = await self._submit_validate_request(
+                step_request
+            )
+            response_ms = (time.perf_counter() - step_start) * 1000
+            selected = util.decode(
+                selection,
+                device=torch.device("cpu"),
+                dtype=torch.long,
+                shape=(1,),
+            )
+            next_token_id = int(selected[0].item())
+            current_token_id = next_token_id
+            current_position += 1
+            generated_tokens += 1
+            decode_ms = float(metadata.get("decode_ms", response_ms))
+            decode_times.append(decode_ms)
+            response_times.append(response_ms)
+            eos = next_token_id == tokenizer.eos_token_id
+            server_elapsed_ms = (time.perf_counter() - stream_start) * 1000
+
+            yield {
+                "client_idx": client_idx,
+                "req_idx": req_idx,
+                "token_index": token_index,
+                "token_id": next_token_id,
+                "eos": eos,
+                "prompt_tokens": prompt_len,
+                "prefill_ms": float(metadata.get("prefill_ms", 0.0)),
+                "decode_ms": decode_ms,
+                "model_decode_ms": float(metadata.get("model_decode_ms", decode_ms)),
+                "simulated_decode_latency_ms": config.simulated_decode_latency_ms,
+                "queue_wait_ms": float(metadata.get("queue_wait_ms", 0.0)),
+                "server_compute_ms": float(
+                    metadata.get("server_compute_ms", response_ms)
+                ),
+                "server_response_ms": float(
+                    metadata.get("server_response_ms", response_ms)
+                ),
+                "client_observed_response_ms": response_ms,
+                "batch_size": int(metadata.get("batch_size", 0)),
+                "queue_length": int(metadata.get("queue_length", 0)),
+                "background_arrival_rate": float(
+                    metadata.get("background_arrival_rate", 0.0)
+                ),
+                "server_elapsed_ms": server_elapsed_ms,
+            }
+
+            if eos:
+                break
+
+        self._logger.info(
+            "Finished streaming AR req_idx=%d, tokens=%d, mean_response=%.2f ms",
+            req_idx,
+            generated_tokens,
+            sum(response_times) / len(response_times) if response_times else 0.0,
+        )
 
     def _init_inference_loop(self):
         self._inference_process = mp.Process(
@@ -180,6 +375,23 @@ class InferenceController:
         self._device = config.device
 
         self._num_clients = num_clients
+        self._foreground_num_clients = num_clients
+        self._background_enabled = (
+            (
+                config.background_arrival_rate > 0.0
+                or config.background_profile in {"step", "bursty"}
+            )
+            and config.background_max_active_requests > 0
+        )
+        self._background_max_active_requests = (
+            config.background_max_active_requests
+            if self._background_enabled
+            else 0
+        )
+        self._num_cache_slots = (
+            self._foreground_num_clients
+            + self._background_max_active_requests
+        )
         self._temperature = config.temperature
         self._batch_size = config.max_batch_size
         self._max_budget = config.max_budget
@@ -188,9 +400,40 @@ class InferenceController:
         self._batch_type = config.batch_type
         self.dataset = util.load_dataset(config.dataset, config.target_model)
 
-        self._request_batches: list[specedge_pb2.ValidateRequest] = []
+        self._unified_request_queue: list[_QueuedRequest] = []
+        self._arrival_sequence = 0
+        self._shutdown_requested = False
         self._recv_queue = recv_queue
         self._resp_queue = resp_queue
+        self._rng = random.Random(config.seed + 1009)
+        self._background_waiting: list[_BackgroundRequestState] = []
+        self._background_active: dict[int, _BackgroundRequestState] = {}
+        self._background_free_slots = list(
+            range(
+                self._foreground_num_clients,
+                self._foreground_num_clients
+                + self._background_max_active_requests,
+            )
+        )
+        self._background_started = (
+            not config.background_start_on_first_foreground
+        )
+        self._background_start_time = (
+            time.perf_counter() + config.background_start_delay_s
+            if self._background_started
+            else float("inf")
+        )
+        self._background_epoch_time = self._background_start_time
+        self._background_step_schedule = self._parse_step_schedule(
+            config.background_step_schedule
+        )
+        self._background_in_burst = False
+        self._background_burst_until = 0.0
+        self._background_next_burst_check = self._background_start_time
+        self._background_next_req_idx = 0
+        self._background_next_arrival = self._next_background_arrival_time()
+        self._background_completed_tokens = 0
+        self._background_completed_requests = 0
 
         self._tokenizer = util.load_tokenizer(config.target_model)
 
@@ -213,7 +456,7 @@ class InferenceController:
         self.k_cache = torch.zeros(
             (
                 self._model.config.num_hidden_layers,
-                self._num_clients,
+                self._num_cache_slots,
                 self._model.config.num_key_value_heads,
                 self._max_len,
                 self._model.config.head_dim,
@@ -233,7 +476,7 @@ class InferenceController:
         )
 
         self._iter_idx = torch.zeros(
-            (self._num_clients,),
+            (self._num_cache_slots,),
             dtype=torch.long,
             device=self._device,
         )
@@ -281,6 +524,338 @@ class InferenceController:
         self._kv_prefill_offloading = self._cache_prefill()
 
         self._logger.debug("Inference controller initialized")
+
+    def _parse_step_schedule(self, raw: str) -> list[tuple[float, float]]:
+        schedule: list[tuple[float, float]] = []
+        for item in raw.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            if ":" in item:
+                duration_raw, rate_raw = item.split(":", 1)
+                duration_s = float(duration_raw)
+                rate = float(rate_raw)
+            else:
+                duration_s = 30.0
+                rate = float(item)
+            if duration_s <= 0.0:
+                raise ValueError("background step duration must be positive")
+            if rate < 0.0:
+                raise ValueError("background step rate must be non-negative")
+            schedule.append((duration_s, rate))
+        return schedule
+
+    def _background_elapsed_s(self) -> float:
+        if not self._background_started:
+            return 0.0
+        return max(0.0, time.perf_counter() - self._background_epoch_time)
+
+    def _current_background_arrival_rate(self) -> float:
+        profile = config.background_profile
+        if profile == "constant":
+            return config.background_arrival_rate
+        if profile == "step":
+            if not self._background_step_schedule:
+                return config.background_arrival_rate
+            elapsed = self._background_elapsed_s()
+            cursor = 0.0
+            for duration_s, rate in self._background_step_schedule:
+                cursor += duration_s
+                if elapsed < cursor:
+                    return rate
+            return self._background_step_schedule[-1][1]
+        if profile == "bursty":
+            now = time.perf_counter()
+            if self._background_in_burst and now < self._background_burst_until:
+                return config.background_bursty_burst_rate
+            if self._background_in_burst and now >= self._background_burst_until:
+                self._background_in_burst = False
+                self._background_next_burst_check = now
+            if now >= self._background_next_burst_check:
+                self._background_next_burst_check = now + 1.0
+                if (
+                    config.background_bursty_trigger_rate > 0.0
+                    and self._rng.random() < config.background_bursty_trigger_rate
+                ):
+                    duration = self._rng.uniform(
+                        config.background_bursty_min_duration_s,
+                        config.background_bursty_max_duration_s,
+                    )
+                    self._background_in_burst = True
+                    self._background_burst_until = now + duration
+                    return config.background_bursty_burst_rate
+            return config.background_bursty_base_rate
+        return config.background_arrival_rate
+
+    def _next_background_arrival_time(self) -> float:
+        if not self._background_enabled or not self._background_started:
+            return float("inf")
+        rate = self._current_background_arrival_rate()
+        if rate <= 0.0:
+            return float("inf")
+        return max(
+            time.perf_counter(),
+            self._background_start_time,
+        ) + self._rng.expovariate(rate)
+
+    def _start_background_if_needed(self) -> None:
+        if not self._background_enabled or self._background_started:
+            return
+        self._background_started = True
+        self._background_start_time = (
+            time.perf_counter() + config.background_start_delay_s
+        )
+        self._background_epoch_time = self._background_start_time
+        self._background_next_burst_check = self._background_start_time
+        self._background_next_arrival = self._next_background_arrival_time()
+
+    def _safe_qsize(self) -> int:
+        try:
+            return self._recv_queue.qsize()
+        except NotImplementedError:
+            return 0
+
+    def _background_has_work(self) -> bool:
+        if not self._background_enabled:
+            return False
+        if not self._background_started:
+            return False
+        if time.perf_counter() < self._background_start_time:
+            return False
+        return (
+            time.perf_counter() >= self._background_next_arrival
+            or bool(self._background_waiting)
+            or any(
+                not state.in_flight
+                for state in self._background_active.values()
+            )
+        )
+
+    def _create_background_request(self) -> _BackgroundRequestState:
+        dataset_idx = self._rng.randrange(len(self.dataset))
+        token_ids = self._tokenizer.encode(
+            self.dataset[dataset_idx],
+            return_tensors="pt",
+        )[0]
+        if token_ids.numel() < 2:
+            fallback = self._tokenizer.eos_token_id or 0
+            token_ids = torch.tensor([fallback, fallback], dtype=torch.long)
+        max_prompt_len = min(
+            int(token_ids.numel()),
+            max(2, config.background_prompt_max_tokens),
+            self._max_len - 1,
+        )
+        min_prompt_len = min(
+            max_prompt_len,
+            max(2, config.background_prompt_min_tokens),
+        )
+        prompt_len = self._rng.randint(min_prompt_len, max_prompt_len)
+        prompt_ids = token_ids[:prompt_len]
+        generation_len = self._rng.randint(
+            config.background_generation_min_tokens,
+            config.background_generation_max_tokens,
+        )
+        generation_len = min(generation_len, self._max_len - prompt_len)
+        state = _BackgroundRequestState(
+            slot_idx=-1,
+            req_idx=-(self._background_next_req_idx + 1),
+            prefix=self._tokenizer.decode(
+                prompt_ids,
+                skip_special_tokens=False,
+            ),
+            remaining_tokens=generation_len,
+            current_token_id=int(prompt_ids[-1].item()),
+            current_position=prompt_len - 1,
+            ready_time=self._background_next_arrival,
+        )
+        self._background_next_req_idx += 1
+        return state
+
+    def _queue_request(
+        self,
+        request: specedge_pb2.ValidateRequest,
+        arrival_time: float,
+    ) -> None:
+        heapq.heappush(
+            self._unified_request_queue,
+            _QueuedRequest(
+                arrival_time=arrival_time,
+                sequence_number=self._arrival_sequence,
+                request=request,
+            ),
+        )
+        self._arrival_sequence += 1
+
+    def _handle_recv_item(self, item) -> bool:
+        if item is None:
+            self._shutdown_requested = True
+            return False
+
+        if isinstance(item, tuple):
+            arrival_time, raw_data = item
+        else:
+            arrival_time = time.perf_counter()
+            raw_data = item
+
+        req = specedge_pb2.ValidateRequest()
+        req.ParseFromString(raw_data)
+        if req.client_idx < self._foreground_num_clients:
+            self._start_background_if_needed()
+        self._queue_request(req, float(arrival_time))
+        return True
+
+    def _drain_foreground_queue(self) -> None:
+        while True:
+            try:
+                item = self._recv_queue.get(False)
+            except queue.Empty:
+                return
+            self._handle_recv_item(item)
+            if self._shutdown_requested:
+                return
+
+    def _collect_arrivals(self) -> None:
+        deadline = time.perf_counter() + config.scheduler_tick_ms / 1000.0
+        self._drain_foreground_queue()
+        self._enqueue_background_work()
+
+        while (
+            not self._shutdown_requested
+            and len(self._unified_request_queue) < self._batch_size
+            and time.perf_counter() < deadline
+        ):
+            timeout = max(0.0, deadline - time.perf_counter())
+            try:
+                item = self._recv_queue.get(True, timeout)
+                self._handle_recv_item(item)
+            except queue.Empty:
+                pass
+            self._enqueue_background_work()
+
+    def _build_background_validate_request(
+        self,
+        state: _BackgroundRequestState,
+    ) -> specedge_pb2.ValidateRequest:
+        input_ids = torch.tensor(
+            [[state.current_token_id]],
+            dtype=torch.long,
+            device=self._device,
+        )
+        position_ids = torch.tensor(
+            [[state.current_position]],
+            dtype=torch.long,
+            device=self._device,
+        )
+        cache_seq_indices = torch.tensor(
+            [state.current_position],
+            dtype=torch.long,
+            device=self._device,
+        )
+        parent_indices = torch.empty(
+            (0,),
+            dtype=torch.long,
+            device=self._device,
+        )
+        attention_mask = torch.zeros(
+            (1, 1, 1, self._max_len),
+            dtype=self._dtype,
+            device=self._device,
+        )
+        attention_mask[..., : state.current_position + 1] = 1.0
+        return specedge_pb2.ValidateRequest(
+            client_idx=state.slot_idx,
+            req_idx=state.req_idx,
+            input_ids=util.encode(input_ids),
+            position_ids=util.encode(position_ids),
+            cache_seq_indices=util.encode(cache_seq_indices),
+            parent_indices=util.encode(parent_indices),
+            attention_mask=util.encode(attention_mask),
+            prefill=not state.prefilled,
+            prefix=state.prefix if not state.prefilled else None,
+        )
+
+    def _enqueue_background_work(self) -> None:
+        if not self._background_enabled:
+            return
+        if not self._background_started:
+            return
+        if time.perf_counter() < self._background_start_time:
+            return
+
+        if (
+            self._background_next_arrival == float("inf")
+            and self._current_background_arrival_rate() > 0.0
+        ):
+            self._background_next_arrival = self._next_background_arrival_time()
+
+        total_background = (
+            len(self._background_waiting)
+            + len(self._background_active)
+        )
+        while (
+            time.perf_counter() >= self._background_next_arrival
+            and total_background < self._background_max_active_requests
+        ):
+            self._background_waiting.append(
+                self._create_background_request()
+            )
+            total_background += 1
+            self._background_next_arrival = (
+                self._next_background_arrival_time()
+            )
+
+        while self._background_waiting and self._background_free_slots:
+            state = self._background_waiting.pop(0)
+            state.slot_idx = self._background_free_slots.pop(0)
+            self._background_active[state.slot_idx] = state
+
+        for state in list(self._background_active.values()):
+            if state.in_flight or state.remaining_tokens <= 0:
+                continue
+            if state.ready_time > time.perf_counter():
+                continue
+            self._queue_request(
+                self._build_background_validate_request(state),
+                state.ready_time,
+            )
+            state.in_flight = True
+
+    def _server_step_log(
+        self,
+        *,
+        batch_size: int,
+        queue_wait_ms: float,
+        server_compute_ms: float,
+        server_response_ms: float,
+        decode_ms: float,
+        prefill_ms: float,
+        prefill_count: int,
+    ) -> dict:
+        return {
+            "queue_wait_ms": queue_wait_ms,
+            "server_compute_ms": server_compute_ms,
+            "server_response_ms": server_response_ms,
+            "server_response_time": server_response_ms,
+            "decode_latency": decode_ms
+            + config.simulated_decode_latency_ms,
+            "prefill_latency": prefill_ms,
+            "batch_size": batch_size,
+            "queue_length": self._safe_qsize() + len(self._unified_request_queue),
+            "pending_prefill_count": prefill_count,
+            "background_load": config.background_load,
+            "background_profile": config.background_profile,
+            "background_arrival_rate": self._current_background_arrival_rate(),
+            "background_config_arrival_rate": config.background_arrival_rate,
+            "background_start_delay_s": config.background_start_delay_s,
+            "background_start_on_first_foreground": (
+                config.background_start_on_first_foreground
+            ),
+            "background_started": self._background_started,
+            "background_active": len(self._background_active),
+            "background_waiting": len(self._background_waiting),
+            "background_completed_tokens": self._background_completed_tokens,
+            "background_completed_requests": self._background_completed_requests,
+        }
 
     def _cache_prefill(self):
         # Skip prefill caching if disabled
@@ -371,88 +946,89 @@ class InferenceController:
     def loop(self):
         self._logger.debug("Starting inference loop")
         while True:
-            if len(self._request_batches) < self._batch_size:
-                while self._check_batch_condition():
-                    raw_data = self._recv_queue.get()
+            self._collect_arrivals()
+            if not self._unified_request_queue:
+                if self._shutdown_requested:
+                    self._logger.info("Inference loop shutting down gracefully")
+                    return
+                continue
 
-                    # Check for sentinel value (shutdown signal)
-                    if raw_data is None:
-                        self._logger.info("Received shutdown signal in inference loop")
-                        self._logger.info(
-                            "Processing remaining %d requests before shutdown...",
-                            len(self._request_batches),
-                        )
+            queued_batch = [
+                heapq.heappop(self._unified_request_queue)
+                for _ in range(min(self._batch_size, len(self._unified_request_queue)))
+            ]
+            compute_start = time.perf_counter()
+            batch = [item.request for item in queued_batch]
+            queue_waits_ms = [
+                max(0.0, (compute_start - item.arrival_time) * 1000)
+                for item in queued_batch
+            ]
 
-                        # Process any remaining requests
-                        if len(self._request_batches) > 0:
-                            self._logger.info(
-                                "Processing final batch of %d requests",
-                                len(self._request_batches),
-                            )
-                            self._client_indices.fill_(-1)
+            self._logger.info("Batch size reached: %d", len(batch))
+            self._client_indices.fill_(-1)
 
-                            with util.Timing(
-                                device=self._device, mode="sync"
-                            ) as inference_t:
-                                forward_t, prefill_indices = self._inference(
-                                    self._request_batches[-self._batch_size :]
-                                )
-
-                            self._result_logger.log(
-                                {
-                                    "target": {
-                                        "forward_t": forward_t,
-                                        "server_end_to_end_t": inference_t.elapsed,
-                                        "simulated_latency_ms": (
-                                            config.simulated_latency_ms
-                                        ),
-                                        "simulated_decode_latency_ms": (
-                                            config.simulated_decode_latency_ms
-                                        ),
-                                        "prefill": len(prefill_indices),
-                                    }
-                                }
-                            )
-
-                        self._logger.info("Inference loop shutting down gracefully")
-                        return
-
-                    req = specedge_pb2.ValidateRequest()
-                    req.ParseFromString(raw_data)
-                    self._request_batches.append(req)
-
-                if len(self._request_batches) == 0:
-                    continue
-
-                self._logger.info("Batch size reached: %d", len(self._request_batches))
-
-                self._client_indices.fill_(-1)
-
-                with util.Timing(device=self._device, mode="sync") as inference_t:
-                    forward_t, prefill_indices = self._inference(
-                        self._request_batches[-self._batch_size :]
-                    )
-                self._request_batches = self._request_batches[: -self._batch_size]
-
-                self._result_logger.log(
-                    {
-                        "target": {
-                            "forward_t": forward_t,
-                            "server_end_to_end_t": inference_t.elapsed,
-                            "simulated_latency_ms": config.simulated_latency_ms,
-                            "simulated_decode_latency_ms": (
-                                config.simulated_decode_latency_ms
-                            ),
-                            "prefill": len(prefill_indices),
-                        }
-                    }
+            with util.Timing(device=self._device, mode="sync") as inference_t:
+                forward_t, prefill_indices, prefill_t = self._inference(
+                    batch,
+                    queue_waits_ms=queue_waits_ms,
+                    batch_queue_length=self._safe_qsize()
+                    + len(self._unified_request_queue),
+                    batch_background_arrival_rate=(
+                        self._current_background_arrival_rate()
+                    ),
                 )
+            average_queue_wait_ms = (
+                sum(queue_waits_ms) / len(queue_waits_ms)
+                if queue_waits_ms
+                else 0.0
+            )
+            server_compute_ms = (
+                forward_t + prefill_t + config.simulated_decode_latency_ms
+            )
+            average_server_response_ms = (
+                average_queue_wait_ms + server_compute_ms
+            )
+
+            self._result_logger.log(
+                {
+                    "target": {
+                        "forward_t": forward_t,
+                        "server_end_to_end_t": inference_t.elapsed,
+                        "simulated_latency_ms": config.simulated_latency_ms,
+                        "simulated_decode_latency_ms": (
+                            config.simulated_decode_latency_ms
+                        ),
+                        "prefill": len(prefill_indices),
+                    },
+                    "server_step": self._server_step_log(
+                        batch_size=len(batch),
+                        queue_wait_ms=average_queue_wait_ms,
+                        server_compute_ms=server_compute_ms,
+                        server_response_ms=average_server_response_ms,
+                        decode_ms=forward_t,
+                        prefill_ms=prefill_t,
+                        prefill_count=len(prefill_indices),
+                    ),
+                }
+            )
 
     @torch.inference_mode()
-    def _inference(self, batch: list[specedge_pb2.ValidateRequest]):
+    def _inference(
+        self,
+        batch: list[specedge_pb2.ValidateRequest],
+        *,
+        queue_waits_ms: list[float],
+        batch_queue_length: int,
+        batch_background_arrival_rate: float,
+    ):
         prefill_indices: list[tuple[int, int]] = []
         request_token_counts: list[int] = []
         self._engine._past_key_values.clear()
+        self._input_ids.zero_()
+        self._position_ids.zero_()
+        self._cache_seq_indices.zero_()
+        self._parent_indices.zero_()
+        self._attention_mask.zero_()
 
         for batch_idx, req in enumerate(batch):
             client_idx = req.client_idx
@@ -471,8 +1047,12 @@ class InferenceController:
             cache_seq_indices = util.decode(
                 req.cache_seq_indices, self._device, torch.long, (-1,)
             )
-            parent_indices = util.decode(
-                req.parent_indices, self._device, torch.long, (-1,)
+            parent_indices = (
+                torch.empty((0,), dtype=torch.long, device=self._device)
+                if len(req.parent_indices) == 0
+                else util.decode(
+                    req.parent_indices, self._device, torch.long, (-1,)
+                )
             )
             attention_mask = util.decode(
                 req.attention_mask,
@@ -520,8 +1100,14 @@ class InferenceController:
                     self.v_cache[:, req.client_idx, ...]
                 )
 
+        while len(request_token_counts) < self._batch_size:
+            request_token_counts.append(0)
+
+        prefill_elapsed_ms = 0.0
         for batch_idx, req_idx in prefill_indices:
-            if config.cache_prefill:
+            req = batch[batch_idx]
+            is_background = req.client_idx >= self._foreground_num_clients
+            if config.cache_prefill and not is_background:
                 # Load from cache
                 k_cache, v_cache = self._kv_prefill_offloading[req_idx]
 
@@ -533,7 +1119,6 @@ class InferenceController:
                 ].copy_(v_cache)
             else:
                 # Perform runtime prefill
-                req = batch[batch_idx]
                 if req.prefix is None or req.prefix == "":
                     raise ValueError(
                         f"Prefix is required for runtime prefill (req_idx={req_idx})"
@@ -550,13 +1135,15 @@ class InferenceController:
                     :, :, : input_ids.size(1), : self._max_len
                 ]
 
-                self._engine.prefill(
-                    input_ids=input_ids,
-                    position_ids=position_ids,
-                    batch_idx=batch_idx,
-                    cache_seq_indices=cache_seq_indices,
-                    attention_mask=attention_mask,
-                )
+                with util.Timing(device=self._device, mode="sync") as prefill_t:
+                    self._engine.prefill(
+                        input_ids=input_ids,
+                        position_ids=position_ids,
+                        batch_idx=batch_idx,
+                        cache_seq_indices=cache_seq_indices,
+                        attention_mask=attention_mask,
+                    )
+                prefill_elapsed_ms += prefill_t.elapsed
 
         with util.Timing(device=self._device, mode="event") as forward_t:
             logits = self._engine.forward(
@@ -572,37 +1159,76 @@ class InferenceController:
             time.sleep(config.simulated_decode_latency_ms / 1000.0)
         if config.simulated_latency_ms > 0:
             time.sleep(config.simulated_latency_ms / 1000.0)
+        prefill_batch_indices = {batch_idx for batch_idx, _ in prefill_indices}
         for batch_idx, client_idx in enumerate(self._client_indices):
             if client_idx == -1:
                 continue
             request_token_count = request_token_counts[batch_idx]
-            self._resp_queue.put(
-                (
-                    (
-                        util.encode(selection[batch_idx, :request_token_count]),
-                        len(prefill_indices),
-                    ),
-                    client_idx.item(),
+            client_idx_value = int(client_idx.item())
+            if client_idx_value < self._foreground_num_clients:
+                queue_wait_ms = (
+                    queue_waits_ms[batch_idx]
+                    if batch_idx < len(queue_waits_ms)
+                    else 0.0
                 )
-            )
+                server_compute_ms = (
+                    forward_t.elapsed
+                    + (
+                        prefill_elapsed_ms
+                        if batch_idx in prefill_batch_indices
+                        else 0.0
+                    )
+                    + config.simulated_decode_latency_ms
+                )
+                metadata = {
+                    "queue_wait_ms": queue_wait_ms,
+                    "server_compute_ms": server_compute_ms,
+                    "server_response_ms": queue_wait_ms + server_compute_ms,
+                    "model_decode_ms": forward_t.elapsed,
+                    "decode_ms": (
+                        forward_t.elapsed
+                        + config.simulated_decode_latency_ms
+                    ),
+                    "prefill_ms": (
+                        prefill_elapsed_ms
+                        if batch_idx in prefill_batch_indices
+                        else 0.0
+                    ),
+                    "batch_size": len(batch),
+                    "queue_length": batch_queue_length,
+                    "background_arrival_rate": batch_background_arrival_rate,
+                }
+                self._resp_queue.put(
+                    (
+                        (
+                            util.encode(selection[batch_idx, :request_token_count]),
+                            len(prefill_indices),
+                            metadata,
+                        ),
+                        client_idx_value,
+                    )
+                )
+            else:
+                state = self._background_active.get(client_idx_value)
+                if state is not None:
+                    state.current_token_id = int(selection[batch_idx, 0].item())
+                    state.current_position += 1
+                    state.remaining_tokens -= 1
+                    self._background_completed_tokens += 1
+                    state.prefilled = True
+                    state.in_flight = False
+                    if state.remaining_tokens <= 0:
+                        self._background_completed_requests += 1
+                        del self._background_active[client_idx_value]
+                        self._background_free_slots.append(client_idx_value)
+                    else:
+                        state.ready_time = time.perf_counter()
 
         self._reorder_kv_cache(
             selection=selection,
             request_token_counts=request_token_counts,
         )
-        return forward_t.elapsed, prefill_indices
-
-    def _check_batch_condition(self):
-        match self._batch_type:
-            case "dynamic":
-                return (
-                    self._recv_queue.qsize() > 0
-                    and len(self._request_batches) < self._batch_size
-                )
-            case "static":
-                return len(self._request_batches) < self._batch_size
-            case _:
-                raise ValueError(f"Unknown batch type: {self._batch_type}")
+        return forward_t.elapsed, prefill_indices, prefill_elapsed_ms
 
     def _reorder_kv_cache(
         self,

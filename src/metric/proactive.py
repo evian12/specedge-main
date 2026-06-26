@@ -139,6 +139,13 @@ def summarize(data_dir: Path) -> dict[str, Any]:
                 if detail.get("matched_stop_depth") is not None
             ]
         ),
+        "matched_reused_depth": _mean(
+            [
+                float(detail["matched_reused_depth"])
+                for detail in details
+                if detail.get("matched_reused_depth") is not None
+            ]
+        ),
         "reused_proactive_depth": _mean(
             [
                 float(detail["reused_proactive_depth"])
@@ -270,6 +277,7 @@ def main() -> None:
         "selected",
         "roots",
         "stop",
+        "match reuse",
         "reuse",
         "nodes",
         "waste",
@@ -306,6 +314,7 @@ def main() -> None:
                 _format(summary["selected_leaf_count"]),
                 _format(summary["root_count"]),
                 _format(summary["matched_stop_depth"]),
+                _format(summary["matched_reused_depth"]),
                 _format(summary["reused_proactive_depth"]),
                 _format(summary["proactive_node_count"]),
                 _format(summary["wasted_node_count"]),

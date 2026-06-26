@@ -10,7 +10,6 @@ import util
 from config import SpecEdgeClientConfig as config
 from specedge.client.initial_draft_policy import (
     InitialDraftDecision,
-    LinUCBInitialDraftPolicy,
     LocalStreakInitialDraftPolicy,
     initial_depth_after_proactive_reuse,
 )
@@ -26,7 +25,6 @@ from specedge.tree import Tree
 class SpecExecClient:
     _shared_adaptive_policy: Optional[AdaptiveProactivePolicy] = None
     _shared_full_depth_acceptance: Optional[float] = None
-    _shared_initial_draft_policy: Optional[LinUCBInitialDraftPolicy] = None
 
     def __init__(
         self,
@@ -60,9 +58,20 @@ class SpecExecClient:
         self._proactive_type = config.proactive_type
         self._proactive_mode = config.proactive_mode
         self._proactive_path_policy = config.proactive_path_policy
+        self._proactive_reuse_refill = config.proactive_reuse_refill
 
         self._max_new_tokens = config.max_new_tokens
         self._client_idx = config.client_idx
+        self._decode_mode = "adaptive" if config.adaptive_mode else config.decode_mode
+        self._switch_threshold_ms = config.switch_threshold_ms
+        self._decision_window = config.decision_window
+        self._estimator_alpha = config.estimator_alpha
+        self._adaptive_initial_mode = config.adaptive_initial_mode
+        self._estimated_server_time_ms: Optional[float] = None
+        self._current_runtime_mode: Optional[str] = None
+        self._mode_switch_count = 0
+        self._ar_token_count = 0
+        self._specedge_cycle_count = 0
 
         self._verify_configs()
 
@@ -88,11 +97,12 @@ class SpecExecClient:
         self._proactive_client: Optional[SpecExecProactiveDraft] = None
         self._adaptive_policy: Optional[AdaptiveProactivePolicy] = None
         self._initial_draft_policy: Optional[
-            LinUCBInitialDraftPolicy | LocalStreakInitialDraftPolicy
+            LocalStreakInitialDraftPolicy
         ] = None
         self._previous_proactive_draft = False
         self._proactive_draft = False
         self._reused_proactive_depth = 0
+        self._last_initial_draft_depth = self._max_beam_len
         if self._proactive_type != "disabled":
             self._proactive_client = SpecExecProactiveDraft(
                 tree=self._tree,
@@ -130,37 +140,29 @@ class SpecExecClient:
                     ),
                 )
             self._adaptive_policy = SpecExecClient._shared_adaptive_policy
-        if self._initial_draft_mode == "linucb":
-            if SpecExecClient._shared_initial_draft_policy is None:
-                SpecExecClient._shared_initial_draft_policy = (
-                    LinUCBInitialDraftPolicy(
-                        candidate_depths=(
-                            config.initial_draft_candidate_depths
-                        ),
-                        max_depth=self._max_beam_len,
-                        exploration_weight=(
-                            config.initial_draft_exploration_weight
-                        ),
-                        warmup_per_depth=(
-                            config.initial_draft_warmup_per_depth
-                        ),
-                        forced_exploration_interval=(
-                            config.initial_draft_forced_exploration_interval
-                        ),
-                        ridge_lambda=config.initial_draft_ridge_lambda,
-                        reward_clip=config.initial_draft_reward_clip,
-                        ewma_alpha=config.initial_draft_ewma_alpha,
-                        seed=config.seed,
-                    )
-                )
-            self._initial_draft_policy = (
-                SpecExecClient._shared_initial_draft_policy
-            )
-        elif self._initial_draft_mode == "local_streak":
+        if self._initial_draft_mode == "local_streak":
             self._initial_draft_policy = LocalStreakInitialDraftPolicy(
+                controller=config.initial_draft_local_controller,
                 initial_depth=config.initial_draft_local_initial_depth,
                 min_depth=config.initial_draft_local_min_depth,
                 max_depth=config.initial_draft_local_max_depth,
+                increase_streak=config.initial_draft_local_increase_streak,
+                decrease_streak=config.initial_draft_local_decrease_streak,
+                high_score=config.initial_draft_local_high_score,
+                low_penalty=config.initial_draft_local_low_penalty,
+                increase_score_threshold=(
+                    config.initial_draft_local_increase_score_threshold
+                ),
+                decrease_score_threshold=(
+                    config.initial_draft_local_decrease_score_threshold
+                ),
+                protect_window=config.initial_draft_local_protect_window,
+                protect_avg_accepted_depth=(
+                    config.initial_draft_local_protect_avg_accepted_depth
+                ),
+                neutral_score_decay=(
+                    config.initial_draft_local_neutral_score_decay
+                ),
                 state_window_size=(
                     config.initial_draft_local_state_window_size
                 ),
@@ -210,7 +212,6 @@ class SpecExecClient:
     def _verify_configs(self):
         if self._initial_draft_mode not in [
             "fixed",
-            "linucb",
             "local_streak",
         ]:
             raise ValueError(
@@ -239,6 +240,25 @@ class SpecExecClient:
         if config.initial_draft_local_increase_streak <= 0:
             raise ValueError(
                 "initial_draft.local_streak.increase_streak must be positive"
+            )
+        if self._decode_mode not in ["ar", "specedge", "adaptive"]:
+            raise ValueError("decode mode must be one of ar, specedge, adaptive")
+        if config.adaptive_initial_mode not in ["ar", "specedge"]:
+            raise ValueError("adaptive initial mode must be ar or specedge")
+        if config.switch_threshold_ms <= 0.0:
+            raise ValueError("switch_threshold_ms must be positive")
+        if config.decision_window <= 0:
+            raise ValueError("decision_window must be positive")
+        if not 0.0 < config.estimator_alpha <= 1.0:
+            raise ValueError("estimator_alpha must be in (0, 1]")
+        if config.initial_draft_local_controller not in [
+            "score",
+            "state",
+            "probe_score",
+        ]:
+            raise ValueError(
+                "initial_draft.local_streak.controller must be one of "
+                "score, state, probe_score"
             )
         if config.initial_draft_local_decrease_streak <= 0:
             raise ValueError(
@@ -360,9 +380,19 @@ class SpecExecClient:
             "adaptive",
         ]:
             raise ValueError(f"Invalid proactive_mode: {self._proactive_mode}")
+        if config.proactive_adaptive_layer_deadline_mode not in [
+            "per_layer",
+            "response_only",
+        ]:
+            raise ValueError(
+                "adaptive.layer_deadline_mode must be 'per_layer' "
+                "or 'response_only'"
+            )
         if self._proactive_path_policy not in [
             "single_best",
             "deepest_multi",
+            "hybrid_sequence",
+            "hybrid_sequence_multi_position",
             "sequence_depth",
         ]:
             raise ValueError(
@@ -415,6 +445,86 @@ class SpecExecClient:
             raise ValueError(
                 "multi.depth_probability_coverage must be non-increasing"
             )
+        if config.proactive_multi_root_depth_mode not in [
+            "uniform",
+            "probability",
+        ]:
+            raise ValueError(
+                "multi.root_depth_mode must be 'uniform' or 'probability'"
+            )
+        if config.proactive_multi_root_depth_floor <= 0:
+            raise ValueError("multi.root_depth_floor must be positive")
+        if config.proactive_multi_root_depth_gamma < 0.0:
+            raise ValueError(
+                "multi.root_depth_gamma must be non-negative"
+            )
+        if config.proactive_multi_root_depth_secondary_cap < 0:
+            raise ValueError(
+                "multi.root_depth_secondary_cap must be non-negative"
+            )
+        if not (
+            0.0
+            <= config.proactive_multi_dynamic_mid_threshold
+            <= config.proactive_multi_dynamic_high_threshold
+            <= 1.0
+        ):
+            raise ValueError(
+                "multi.dynamic_roots thresholds must satisfy "
+                "0 <= mid_threshold <= high_threshold <= 1"
+            )
+        for name, value in [
+            ("high_roots", config.proactive_multi_dynamic_high_roots),
+            ("mid_roots", config.proactive_multi_dynamic_mid_roots),
+            ("low_roots", config.proactive_multi_dynamic_low_roots),
+        ]:
+            if value <= 0:
+                raise ValueError(f"multi.dynamic_roots.{name} must be positive")
+            if value > config.proactive_multi_max_roots:
+                raise ValueError(
+                    f"multi.dynamic_roots.{name} must not exceed multi.max_roots"
+                )
+        if config.proactive_multi_dynamic_mode not in [
+            "threshold",
+            "marginal",
+            "online_marginal",
+        ]:
+            raise ValueError(
+                "multi.dynamic_roots.mode must be 'threshold', 'marginal', "
+                "or 'online_marginal'"
+            )
+        if config.proactive_multi_dynamic_marginal_min_gain < 0.0:
+            raise ValueError(
+                "multi.dynamic_roots.marginal_min_gain must be non-negative"
+            )
+        if config.proactive_multi_dynamic_marginal_cost_weight < 0.0:
+            raise ValueError(
+                "multi.dynamic_roots.marginal_cost_weight must be non-negative"
+            )
+        if (
+            config.proactive_multi_dynamic_marginal_confidence_penalty
+            < 0.0
+        ):
+            raise ValueError(
+                "multi.dynamic_roots.marginal_confidence_penalty must be "
+                "non-negative"
+            )
+        if not 0.0 <= config.proactive_multi_dynamic_online_alpha <= 1.0:
+            raise ValueError(
+                "multi.dynamic_roots.online_alpha must be in [0, 1]"
+            )
+        if config.proactive_multi_dynamic_online_warmup_cycles < 0:
+            raise ValueError(
+                "multi.dynamic_roots.online_warmup_cycles must be non-negative"
+            )
+        if config.proactive_multi_dynamic_online_exploration_interval < 0:
+            raise ValueError(
+                "multi.dynamic_roots.online_exploration_interval must be "
+                "non-negative"
+            )
+        if config.proactive_multi_dynamic_online_min_reward < 0.0:
+            raise ValueError(
+                "multi.dynamic_roots.online_min_reward must be non-negative"
+            )
         survival = config.proactive_sequence_acceptance_survival
         if not survival or abs(survival[0] - 1.0) > 1e-6:
             raise ValueError(
@@ -452,17 +562,43 @@ class SpecExecClient:
             raise ValueError(
                 "sequence.min_bonus_probability must be non-negative"
             )
+        if config.proactive_sequence_min_stop_depth < 0:
+            raise ValueError(
+                "sequence.min_stop_depth must be non-negative"
+            )
         if config.proactive_sequence_selection_score not in [
             "joint",
             "expected_reuse",
+            "balanced_reuse",
+            "confidence_stop",
         ]:
             raise ValueError(
-                "sequence.selection_score must be 'joint' or "
-                "'expected_reuse'"
+                "sequence.selection_score must be 'joint', "
+                "'expected_reuse', 'balanced_reuse', or 'confidence_stop'"
             )
         if config.proactive_sequence_reuse_depth_bonus < 0.0:
             raise ValueError(
                 "sequence.reuse_depth_bonus must be non-negative"
+            )
+        if not 0.0 <= config.proactive_sequence_stop_ewma_alpha <= 1.0:
+            raise ValueError(
+                "sequence.stop_ewma_alpha must be in [0, 1]"
+            )
+        if config.proactive_sequence_min_initial_depth < 0:
+            raise ValueError(
+                "sequence.min_initial_depth must be non-negative"
+            )
+        if config.proactive_sequence_multipos_min_path_depth < 0:
+            raise ValueError(
+                "sequence.multipos_min_path_depth must be non-negative"
+            )
+        if config.proactive_sequence_multipos_min_response_ms < 0.0:
+            raise ValueError(
+                "sequence.multipos_min_response_ms must be non-negative"
+            )
+        if config.proactive_sequence_quota_mode not in ["all", "primary"]:
+            raise ValueError(
+                "sequence.quota_mode must be 'all' or 'primary'"
             )
         sequence_coverage = (
             config.proactive_sequence_depth_probability_coverage
@@ -504,6 +640,16 @@ class SpecExecClient:
         if self._proactive_client is None:
             return ProactiveDraftResult(
                 skipped_reason="disabled",
+                path_policy=self._proactive_path_policy,
+            )
+        if (
+            self._proactive_path_policy == "sequence_depth"
+            and config.proactive_sequence_min_initial_depth > 0
+            and self._last_initial_draft_depth
+            < config.proactive_sequence_min_initial_depth
+        ):
+            return ProactiveDraftResult(
+                skipped_reason="low_initial_depth",
                 path_policy=self._proactive_path_policy,
             )
 
@@ -558,6 +704,35 @@ class SpecExecClient:
                 )
 
         setup_start = time.perf_counter()
+        if self._proactive_path_policy == "hybrid_sequence_multi_position":
+            response_mean_ms = (
+                self._adaptive_policy.response.mean
+                if self._adaptive_policy is not None
+                else None
+            )
+            response_threshold_ms = (
+                config.proactive_sequence_multipos_min_response_ms
+            )
+            response_warmup_cycles = max(
+                config.proactive_adaptive_warmup_cycles,
+                config.proactive_multi_dynamic_online_warmup_cycles,
+            )
+            if response_threshold_ms > 0.0:
+                response_ready = (
+                    self._adaptive_policy is not None
+                    and self._adaptive_policy.cycles
+                    > response_warmup_cycles
+                    and response_mean_ms is not None
+                    and response_mean_ms >= response_threshold_ms
+                )
+            else:
+                response_ready = True
+            self._proactive_client.observe_response_mean_ms(
+                response_mean_ms if response_ready else None
+            )
+            self._proactive_client.use_sequence_positions_for_next_session(
+                self._proactive_draft and response_ready
+            )
         session = self._proactive_client.start_session(
             planned_depth,
             SpecExecClient._shared_full_depth_acceptance,
@@ -582,7 +757,11 @@ class SpecExecClient:
                 batch_width = session.next_batch_width
                 if batch_width == 0:
                     break
-                if self._adaptive_policy is None:
+                if (
+                    self._adaptive_policy is None
+                    or config.proactive_adaptive_layer_deadline_mode
+                    == "response_only"
+                ):
                     break
 
                 layer_decision = self._adaptive_policy.can_start_layer(
@@ -652,6 +831,377 @@ class SpecExecClient:
         result.policy_reason = policy_reason
         return result
 
+    def _observe_server_time(self, server_time_ms: Optional[float]) -> None:
+        if server_time_ms is None:
+            return
+        if self._estimated_server_time_ms is None:
+            self._estimated_server_time_ms = server_time_ms
+        else:
+            alpha = self._estimator_alpha
+            self._estimated_server_time_ms = (
+                (1.0 - alpha) * self._estimated_server_time_ms
+                + alpha * server_time_ms
+            )
+
+    def _select_runtime_mode(self) -> str:
+        if self._decode_mode in ["ar", "specedge"]:
+            return self._decode_mode
+        if self._estimated_server_time_ms is None:
+            return self._adaptive_initial_mode
+        return (
+            "specedge"
+            if self._estimated_server_time_ms >= self._switch_threshold_ms
+            else "ar"
+        )
+
+    def _note_runtime_mode(self, mode: str) -> None:
+        if self._current_runtime_mode is not None and self._current_runtime_mode != mode:
+            self._mode_switch_count += 1
+        self._current_runtime_mode = mode
+
+    def _reset_tree_to_prefix(self) -> None:
+        self._tree = Tree(
+            prefix_tokens=self._prefix_tokens,
+            device=self._device,
+            dtype=self._dtype,
+            max_len=self._engine.max_len,
+        )
+        self._proactive_draft = False
+        self._previous_proactive_draft = False
+        self._reused_proactive_depth = 0
+        if self._proactive_type != "disabled":
+            self._proactive_client = SpecExecProactiveDraft(
+                tree=self._tree,
+                engine=self._engine,
+                max_len=self._max_len,
+            )
+
+    def _prefill_draft_cache_for_prefix(self) -> None:
+        """Rebuild local draft KV cache after AR advanced the accepted prefix.
+
+        Target KV already lives on the server and is updated by AR Validate
+        calls. The local draft model, however, did not see those AR tokens.
+        Before switching back to SpecEdge, prefill the draft cache with the
+        accepted prefix except the current tail token; the next SpecEdge draft
+        step will process the tail token as the normal CANDIDATE.
+        """
+
+        self._engine.reset()
+        self._reset_tree_to_prefix()
+        prefix_len = self._prefix_tokens.numel()
+        if prefix_len <= 1:
+            return
+        prefill_len = prefix_len - 1
+        input_ids = self._prefix_tokens[:, :prefill_len]
+        position_ids = torch.arange(
+            prefill_len,
+            dtype=torch.long,
+            device=self._device,
+        ).unsqueeze(0)
+        cache_seq_indices = torch.arange(
+            prefill_len,
+            dtype=torch.long,
+            device=self._device,
+        )
+        attention_mask = self._tree.amask[..., :prefill_len, :]
+        self._engine.prefill(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            batch_idx=0,
+            cache_seq_indices=cache_seq_indices,
+            attention_mask=attention_mask,
+        )
+
+    def _append_ar_token_to_tree(self, token_id: torch.Tensor) -> None:
+        token_id = token_id.reshape(1).to(self._device)
+        if self._tree.end >= self._tree._max_len:
+            raise ValueError("Tree capacity exhausted while appending AR token")
+        parent_idx = self._tree.prefix_len - 1
+        position = self._tree.positions[parent_idx] + 1
+        self._tree.add(
+            token_ids=token_id,
+            token_positions=position.reshape(1),
+            parent_indices=torch.tensor([parent_idx], device=self._device),
+            logprobs=torch.tensor([0.0], device=self._device),
+            token_status=self._tree.CANDIDATE,
+        )
+        self._tree.prefix_len = self._tree.end
+        self._tree.status[: self._tree.prefix_len - 1] = self._tree.PROMPT
+        self._tree.status[self._tree.prefix_len - 1] = self._tree.CANDIDATE
+
+    async def _ar_step(
+        self,
+        req_idx: int,
+        step_idx: int,
+        *,
+        prefill: bool,
+    ) -> torch.Tensor:
+        request_start = time.perf_counter()
+        with util.Timing(device=self._device, mode=self._target_time_mode) as preprocess_t:
+            current_position = self._prefix_tokens.numel() - 1
+            input_ids = self._prefix_tokens[:, -1:]
+            position_ids = torch.tensor(
+                [[current_position]],
+                dtype=torch.long,
+                device=self._device,
+            )
+            cache_seq_indices = torch.tensor(
+                [current_position],
+                dtype=torch.long,
+                device=self._device,
+            )
+            parent_indices = torch.empty(
+                (0,),
+                dtype=torch.long,
+                device=self._device,
+            )
+            attention_mask = torch.zeros(
+                (1, 1, 1, self._max_len),
+                dtype=self._dtype,
+                device=self._device,
+            )
+            attention_mask[..., : current_position + 1] = 1.0
+
+        with util.Timing(device=self._device, mode=self._target_time_mode) as wait_t:
+            validation_response = await self._validator.request(
+                client_idx=self._client_idx,
+                req_idx=req_idx,
+                input_ids=input_ids,
+                position_ids=position_ids,
+                cache_seq_indices=cache_seq_indices,
+                attention_mask=attention_mask,
+                parent_indices=parent_indices,
+                prefill=prefill,
+                prefix=self._prompt if prefill else None,
+            )
+            next_token = validation_response.selection.reshape(1, 1)
+            response_received_ms = (
+                validation_response.received_at - request_start
+            ) * 1000
+            server_response_ms = validation_response.server_response_ms
+
+        with util.Timing(device=self._device, mode=self._target_time_mode) as postprocess_t:
+            self._prefix_tokens = torch.cat(
+                [self._prefix_tokens, next_token.to(self._device)],
+                dim=-1,
+            )
+            self._append_ar_token_to_tree(next_token)
+            self._proactive_draft = False
+            self._reused_proactive_depth = 0
+
+        self._observe_server_time(server_response_ms)
+        self._ar_token_count += 1
+        self._result_logger.log(
+            {
+                "client_idx": self._client_idx,
+                "req_idx": req_idx,
+                "step_idx": step_idx,
+                "mode": "ar",
+                "adaptive": {
+                    "estimated_server_time_ms": self._estimated_server_time_ms,
+                    "switch_threshold_ms": self._switch_threshold_ms,
+                    "decision_window": self._decision_window,
+                    "mode_switch_count": self._mode_switch_count,
+                },
+                "draft": {
+                    "forward": [],
+                    "end_to_end": 0.0,
+                    "initial_draft": {
+                        "mode": "ar",
+                        "structure": "none",
+                        "selected_depth": 0,
+                        "selection_reason": "ar",
+                        "executed_depth": 0,
+                        "reused_proactive_depth": 0,
+                        "node_count": 0,
+                        "accepted_draft_depth": 0,
+                        "cycle_ms": wait_t.elapsed,
+                        "reward": None,
+                    },
+                },
+                "target": {
+                    "client_preprocess": preprocess_t.elapsed,
+                    "client_wait": wait_t.elapsed,
+                    "client_postprocess": postprocess_t.elapsed,
+                    "end_to_end": (
+                        preprocess_t.elapsed
+                        + wait_t.elapsed
+                        + postprocess_t.elapsed
+                    ),
+                    "prefill": validation_response.prefill,
+                    "proactive": False,
+                    "prev_proactive": self._previous_proactive_draft,
+                    "proactive_execution": {
+                        "mode": "ar",
+                        "path_policy": "none",
+                        "planned_depth": 0,
+                        "executed_depth": 0,
+                        "elapsed_ms": 0.0,
+                        "response_received_ms": response_received_ms,
+                        "server_response_ms": server_response_ms,
+                        "queue_wait_ms": validation_response.queue_wait_ms,
+                        "server_compute_ms": (
+                            validation_response.server_compute_ms
+                        ),
+                        "batch_size": validation_response.batch_size,
+                        "queue_length": validation_response.queue_length,
+                        "background_arrival_rate": (
+                            validation_response.background_arrival_rate
+                        ),
+                        "response_decoded_ms": (
+                            validation_response.decoded_at - request_start
+                        )
+                        * 1000,
+                        "response_observed_ms": (
+                            time.perf_counter() - request_start
+                        )
+                        * 1000,
+                        "root_count": 0,
+                    },
+                },
+                "num_accepted_tokens": 1,
+            }
+        )
+        return next_token
+
+    async def _ar_stream_phase(
+        self,
+        req_idx: int,
+        step_idx: int,
+        *,
+        max_tokens: int,
+        prefill: bool,
+    ) -> tuple[int, bool]:
+        request = {
+            "client_idx": self._client_idx,
+            "req_idx": req_idx,
+            "prompt": self._prompt,
+            "max_new_tokens": max_tokens,
+            "prefill": prefill,
+            "current_token_id": int(self._prefix_tokens[0, -1].item()),
+            "current_position": int(self._prefix_tokens.numel() - 1),
+            "prompt_tokens": int(self._prefix_tokens.numel()),
+        }
+        produced = 0
+        eos_flag = False
+        phase_start = time.perf_counter()
+
+        async for response in self._validator.stream_generate(
+            request,
+            timeout=600.0,
+        ):
+            token_start = time.perf_counter()
+            token_id = int(response["token_id"])
+            next_token = torch.tensor(
+                [[token_id]],
+                dtype=torch.long,
+                device=self._device,
+            )
+            response_received_ms = float(
+                response.get(
+                    "client_observed_response_ms",
+                    (token_start - phase_start) * 1000,
+                )
+            )
+            server_response_ms = float(
+                response.get("server_response_ms", response_received_ms)
+            )
+
+            with util.Timing(
+                device=self._device,
+                mode=self._target_time_mode,
+            ) as postprocess_t:
+                self._prefix_tokens = torch.cat(
+                    [self._prefix_tokens, next_token],
+                    dim=-1,
+                )
+                self._append_ar_token_to_tree(next_token)
+                self._proactive_draft = False
+                self._reused_proactive_depth = 0
+
+            self._observe_server_time(server_response_ms)
+            self._ar_token_count += 1
+            self._result_logger.log(
+                {
+                    "client_idx": self._client_idx,
+                    "req_idx": req_idx,
+                    "step_idx": step_idx + produced,
+                    "mode": "ar",
+                    "adaptive": {
+                        "estimated_server_time_ms": (
+                            self._estimated_server_time_ms
+                        ),
+                        "switch_threshold_ms": self._switch_threshold_ms,
+                        "decision_window": self._decision_window,
+                        "mode_switch_count": self._mode_switch_count,
+                    },
+                    "draft": {
+                        "forward": [],
+                        "end_to_end": 0.0,
+                        "initial_draft": {
+                            "mode": "ar_stream",
+                            "structure": "none",
+                            "selected_depth": 0,
+                            "selection_reason": "ar_stream",
+                            "executed_depth": 0,
+                            "reused_proactive_depth": 0,
+                            "node_count": 0,
+                            "accepted_draft_depth": 0,
+                            "cycle_ms": response_received_ms,
+                            "reward": None,
+                        },
+                    },
+                    "target": {
+                        "client_preprocess": 0.0,
+                        "client_wait": response_received_ms,
+                        "client_postprocess": postprocess_t.elapsed,
+                        "end_to_end": (
+                            response_received_ms + postprocess_t.elapsed
+                        ),
+                        "prefill": 1 if prefill and produced == 0 else 0,
+                        "proactive": False,
+                        "prev_proactive": self._previous_proactive_draft,
+                        "proactive_execution": {
+                            "mode": "ar_stream",
+                            "path_policy": "none",
+                            "planned_depth": 0,
+                            "executed_depth": 0,
+                            "elapsed_ms": 0.0,
+                            "response_received_ms": response_received_ms,
+                            "server_response_ms": server_response_ms,
+                            "queue_wait_ms": float(
+                                response.get("queue_wait_ms", 0.0)
+                            ),
+                            "server_compute_ms": float(
+                                response.get(
+                                    "server_compute_ms",
+                                    server_response_ms,
+                                )
+                            ),
+                            "batch_size": int(response.get("batch_size", 0)),
+                            "queue_length": int(response.get("queue_length", 0)),
+                            "background_arrival_rate": float(
+                                response.get("background_arrival_rate", 0.0)
+                            ),
+                            "response_decoded_ms": response_received_ms,
+                            "response_observed_ms": (
+                                time.perf_counter() - token_start
+                            )
+                            * 1000,
+                            "root_count": 0,
+                        },
+                    },
+                    "num_accepted_tokens": 1,
+                }
+            )
+
+            produced += 1
+            if token_id == self._tokenizer.eos_token_id:
+                eos_flag = True
+                break
+
+        return produced, eos_flag
+
     async def generate(self, req_idx: int):
         """
         Generate a sequence using SpecExec up to max_new_tokens.
@@ -662,39 +1212,90 @@ class SpecExecClient:
         util.set_seed(config.seed)
         step_idx = 0
 
-        # Prefill phase
-        self._logger.debug("Prefill phase: req_idx=%d, step_idx=%d", req_idx, step_idx)
-        warmup_tokens = await self._cycle(
-            req_idx,
-            step_idx,
-            prefill=True,
-            max_fresh_tokens=self._max_new_tokens,
-        )
-        self._prefix_tokens = torch.cat([self._prefix_tokens, warmup_tokens], dim=-1)
+        eos_flag = False
+        target_prefilled = False
+        draft_cache_aligned = True
 
-        step_idx = 1
-        eos_flag = bool(
-            (warmup_tokens == self._tokenizer.eos_token_id).any().item()
-        )
-
-        # speculative decoding phase
         while (
             self._prefix_tokens.numel()
             < self._max_new_tokens + self._num_original_tokens
             and not eos_flag
         ):
-            self._logger.debug(
-                "Speculative Decoding phase: req_idx=%d, step_idx=%d", req_idx, step_idx
-            )
             remaining_tokens = (
                 self._max_new_tokens
                 - (self._prefix_tokens.numel() - self._num_original_tokens)
             )
+            mode = self._select_runtime_mode()
+            self._note_runtime_mode(mode)
+
+            if mode == "ar":
+                if (
+                    self._tree.prefix_len != self._prefix_tokens.numel()
+                    or self._tree.end != self._tree.prefix_len
+                ):
+                    self._reset_tree_to_prefix()
+                    draft_cache_aligned = False
+                self._logger.debug(
+                    "AR phase: req_idx=%d, step_idx=%d, window=%d",
+                    req_idx,
+                    step_idx,
+                    self._decision_window,
+                )
+                ar_window = (
+                    remaining_tokens
+                    if self._decode_mode == "ar"
+                    else min(remaining_tokens, self._decision_window)
+                )
+                produced, ar_eos = await self._ar_stream_phase(
+                    req_idx,
+                    step_idx,
+                    max_tokens=ar_window,
+                    prefill=not target_prefilled,
+                )
+                if produced > 0:
+                    target_prefilled = True
+                    draft_cache_aligned = False
+                    step_idx += produced
+                eos_flag = ar_eos
+                continue
+
+            if not draft_cache_aligned:
+                self._logger.info(
+                    "Rebuilding draft KV cache before AR -> SpecEdge switch"
+                )
+                with util.Timing(device=self._device, mode="sync") as draft_prefill_t:
+                    self._prefill_draft_cache_for_prefix()
+                draft_cache_aligned = True
+                self._result_logger.log(
+                    {
+                        "client_idx": self._client_idx,
+                        "req_idx": req_idx,
+                        "step_idx": step_idx,
+                        "mode": "ar_to_specedge_prefill",
+                        "draft_prefill_ms": draft_prefill_t.elapsed,
+                        "adaptive": {
+                            "estimated_server_time_ms": (
+                                self._estimated_server_time_ms
+                            ),
+                            "switch_threshold_ms": self._switch_threshold_ms,
+                            "mode_switch_count": self._mode_switch_count,
+                        },
+                    }
+                )
+
+            self._logger.debug(
+                "Speculative Decoding phase: req_idx=%d, step_idx=%d",
+                req_idx,
+                step_idx,
+            )
             fresh_tokens = await self._cycle(
                 req_idx,
                 step_idx,
+                prefill=not target_prefilled,
                 max_fresh_tokens=remaining_tokens,
             )
+            target_prefilled = True
+            self._specedge_cycle_count += 1
 
             eos_positions = (fresh_tokens == self._tokenizer.eos_token_id).nonzero()
             if eos_positions.numel() > 0:
@@ -734,6 +1335,7 @@ class SpecExecClient:
                 )
             )
             selected_depth = initial_draft_decision.depth
+        self._last_initial_draft_depth = selected_depth
 
         with util.Timing(device=self._device, mode="sync") as draft_t:
             draft_stats = self._grow_tree(
@@ -743,6 +1345,10 @@ class SpecExecClient:
 
         with util.Timing(device=self._device, mode="sync") as target_t:
             fresh_token_ids, target_stats = await self._validate_tree(req_idx, prefill)
+        server_response_ms = target_stats["proactive_execution"].get(
+            "server_response_ms"
+        )
+        self._observe_server_time(server_response_ms)
 
         if max_fresh_tokens is not None:
             fresh_token_ids = fresh_token_ids[:max_fresh_tokens]
@@ -752,6 +1358,11 @@ class SpecExecClient:
             fresh_token_ids = fresh_token_ids[: eos_positions[0, 0].item() + 1]
 
         target_stats["num_accepted_tokens"] = fresh_token_ids.numel()
+        accepted_draft_depth = max(0, fresh_token_ids.numel() - 1)
+        if self._proactive_client is not None and not prefill:
+            self._proactive_client.observe_sequence_stop_depth(
+                accepted_draft_depth
+            )
         cycle_ms = (time.perf_counter() - cycle_start) * 1000
         initial_draft_log = {
             "mode": self._initial_draft_mode,
@@ -767,9 +1378,7 @@ class SpecExecClient:
                 "reused_proactive_depth"
             ],
             "node_count": draft_stats["node_count"],
-            "accepted_draft_depth": max(
-                0, fresh_token_ids.numel() - 1
-            ),
+            "accepted_draft_depth": accepted_draft_depth,
             "cycle_ms": cycle_ms,
             "reward": None,
             "features": (
@@ -797,7 +1406,7 @@ class SpecExecClient:
                 cycle_ms=cycle_ms,
                 draft_ms=draft_t.elapsed,
                 response_ms=proactive_execution.get(
-                    "response_received_ms"
+                    "server_response_ms"
                 ),
                 node_count=draft_stats["node_count"],
                 max_budget=self._max_budget,
@@ -820,6 +1429,15 @@ class SpecExecClient:
                 "client_idx": self._client_idx,
                 "req_idx": req_idx,
                 "step_idx": step_idx,
+                "mode": "specedge",
+                "adaptive": {
+                    "estimated_server_time_ms": self._estimated_server_time_ms,
+                    "switch_threshold_ms": self._switch_threshold_ms,
+                    "decision_window": self._decision_window,
+                    "mode_switch_count": self._mode_switch_count,
+                    "ar_token_count": self._ar_token_count,
+                    "specedge_cycle_count": self._specedge_cycle_count,
+                },
                 "draft": {
                     "forward": draft_stats["forward_t"],
                     "end_to_end": draft_t.elapsed,
@@ -867,6 +1485,13 @@ class SpecExecClient:
                 path_policy=self._proactive_path_policy,
             )
         )
+        if (
+            self._proactive_draft
+            and self._proactive_path_policy
+            in ["hybrid_sequence", "hybrid_sequence_multi_position"]
+            and not self._proactive_reuse_refill
+        ):
+            max_beam_len = 0
 
         if torch.where(self._tree.status == self._tree.CANDIDATE)[0].numel() == 0:
             max_beam_len = 0
@@ -1162,6 +1787,7 @@ class SpecExecClient:
             response_received_ms = (
                 validation_response.received_at - request_start
             ) * 1000
+            server_response_ms = validation_response.server_response_ms
             response_decoded_ms = (
                 validation_response.decoded_at - request_start
             ) * 1000
@@ -1228,7 +1854,11 @@ class SpecExecClient:
                     in proactive_result.deepest_leaf_indices
                 )
                 proactive_result.observed_full_depth = observed_full_depth
-                if self._proactive_path_policy == "deepest_multi":
+                if self._proactive_path_policy in [
+                    "deepest_multi",
+                    "hybrid_sequence",
+                    "hybrid_sequence_multi_position",
+                ]:
                     previous_rate = (
                         SpecExecClient._shared_full_depth_acceptance
                     )
@@ -1296,13 +1926,19 @@ class SpecExecClient:
                 self._tree.prefix_len = self._tree.end
                 self._tree.status[: self._tree.prefix_len - 1] = self._tree.PROMPT
 
+            if self._proactive_client is not None:
+                self._proactive_client.observe_root_outcome(
+                    proactive_result,
+                    matched_root.root_id if matched_root is not None else None,
+                )
+
             fresh_token_ids = torch.cat(
                 [fresh_token_ids, extra_token_id], dim=-1
             ).unsqueeze(0)
 
         if self._adaptive_policy is not None:
             self._adaptive_policy.observe_cycle(
-                response_ms=response_received_ms,
+                response_ms=server_response_ms,
                 aligned=self._proactive_draft,
                 proactive_executed=(
                     len(proactive_result.roots) > 0
@@ -1319,6 +1955,14 @@ class SpecExecClient:
             "layer_wall_ms": proactive_result.layer_wall_ms,
             "layer_gpu_ms": proactive_result.layer_gpu_ms,
             "response_received_ms": response_received_ms,
+            "server_response_ms": server_response_ms,
+            "queue_wait_ms": validation_response.queue_wait_ms,
+            "server_compute_ms": validation_response.server_compute_ms,
+            "batch_size": validation_response.batch_size,
+            "queue_length": validation_response.queue_length,
+            "background_arrival_rate": (
+                validation_response.background_arrival_rate
+            ),
             "response_decoded_ms": response_decoded_ms,
             "response_observed_ms": response_observed_ms,
             "stopped_by_response": proactive_result.stopped_by_response,
@@ -1348,7 +1992,8 @@ class SpecExecClient:
             "observed_full_depth": proactive_result.observed_full_depth,
             "updated_full_depth_acceptance": (
                 SpecExecClient._shared_full_depth_acceptance
-                if self._proactive_path_policy == "deepest_multi"
+                if self._proactive_path_policy
+                in ["deepest_multi", "hybrid_sequence"]
                 else None
             ),
             "matched_root_id": (

@@ -4,6 +4,7 @@ import torch
 
 from specedge.client.proactive_selection import (
     acceptance_stop_probabilities,
+    allocate_root_depth_limits,
     allocate_sequence_bonus_counts,
     select_bonus_candidates,
     select_ids_by_probability,
@@ -110,6 +111,41 @@ class ProactiveSelectionTest(unittest.TestCase):
             {0},
         )
 
+    def test_root_depth_limits_give_likely_roots_more_depth(self):
+        limits = allocate_root_depth_limits(
+            [(0, 1.0), (1, 0.25), (2, 0.01)],
+            planned_depth=6,
+            floor_depth=1,
+            gamma=0.5,
+        )
+
+        self.assertEqual(limits[0], 6)
+        self.assertGreater(limits[1], limits[2])
+        self.assertGreaterEqual(limits[2], 1)
+
+    def test_root_depth_limits_fall_back_when_probabilities_are_zero(self):
+        limits = allocate_root_depth_limits(
+            [(0, 0.0), (1, 0.0)],
+            planned_depth=4,
+            floor_depth=1,
+            gamma=0.5,
+        )
+
+        self.assertEqual(limits, {0: 4, 1: 4})
+
+    def test_root_depth_limits_cap_secondary_roots(self):
+        limits = allocate_root_depth_limits(
+            [(0, 1.0), (1, 0.8), (2, 0.6)],
+            planned_depth=6,
+            floor_depth=1,
+            gamma=0.2,
+            secondary_cap=2,
+        )
+
+        self.assertEqual(limits[0], 6)
+        self.assertEqual(limits[1], 2)
+        self.assertEqual(limits[2], 2)
+
     def test_acceptance_survival_becomes_stop_probability(self):
         stop = acceptance_stop_probabilities(
             [1.0, 0.51, 0.301, 0.193, 0.133],
@@ -190,6 +226,38 @@ class ProactiveSelectionTest(unittest.TestCase):
         self.assertEqual(candidates[0].stop_depth, 0)
         self.assertEqual(candidates[0].token_id, 100)
 
+    def test_sequence_balanced_reuse_prefers_middle_depth(self):
+        candidates = select_sequence_bonus_candidates(
+            torch.tensor([10, 11, 12, 13, 14]),
+            [0.30, 0.20, 0.16, 0.12, 0.22],
+            torch.tensor(
+                [
+                    [100],
+                    [200],
+                    [300],
+                    [400],
+                    [500],
+                ]
+            ),
+            torch.tensor(
+                [
+                    [0.7],
+                    [0.7],
+                    [0.7],
+                    [0.7],
+                    [0.7],
+                ]
+            ).log(),
+            max_bonus_per_depth=1,
+            max_roots=2,
+            min_root_probability=0.0,
+            selection_score="balanced_reuse",
+            reuse_depth_bonus=2.0,
+        )
+
+        self.assertEqual([candidate.stop_depth for candidate in candidates], [2, 1])
+        self.assertEqual([candidate.token_id for candidate in candidates], [300, 200])
+
     def test_sequence_candidates_filter_low_bonus_probability(self):
         candidates = select_sequence_bonus_candidates(
             torch.tensor([10]),
@@ -203,6 +271,37 @@ class ProactiveSelectionTest(unittest.TestCase):
         )
 
         self.assertEqual([candidate.token_id for candidate in candidates], [100])
+
+    def test_sequence_candidates_filter_shallow_stop_depth(self):
+        candidates = select_sequence_bonus_candidates(
+            torch.tensor([10, 11, 12]),
+            [0.6, 0.3, 0.1],
+            torch.tensor([[100], [200], [300]]),
+            torch.tensor([[0.9], [0.9], [0.9]]).log(),
+            max_bonus_per_depth=1,
+            max_roots=3,
+            min_root_probability=0.0,
+            min_stop_depth=1,
+            selection_score="balanced_reuse",
+        )
+
+        self.assertEqual([candidate.stop_depth for candidate in candidates], [1, 2])
+
+    def test_sequence_candidates_exclude_rejected_path_token(self):
+        candidates = select_sequence_bonus_candidates(
+            torch.tensor([10, 11]),
+            [0.7, 0.3],
+            torch.tensor([[100, 101], [200, 201]]),
+            torch.tensor([[0.9, 0.1], [0.8, 0.2]]).log(),
+            max_bonus_per_depth=2,
+            max_roots=2,
+            min_root_probability=0.0,
+            excluded_token_ids=torch.tensor([100, -1]),
+            selection_score="balanced_reuse",
+        )
+
+        self.assertNotIn(100, [candidate.token_id for candidate in candidates])
+        self.assertIn(101, [candidate.token_id for candidate in candidates])
 
     def test_main_sequence_uses_best_deepest_leaf(self):
         path = trace_main_sequence_nodes(

@@ -12,6 +12,7 @@ from config import SpecEdgeClientConfig as config
 from specedge.client.proactive_selection import (
     ProactiveRootCandidate,
     acceptance_stop_probabilities,
+    allocate_root_depth_limits,
     select_bonus_candidates,
     select_ids_by_probability,
     select_sequence_bonus_candidates,
@@ -74,6 +75,7 @@ class ProactiveRootResult:
     stop_depth: Optional[int] = None
     node_indices: list[int] = field(default_factory=list)
     executed_depth: int = 0
+    depth_limit: Optional[int] = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -86,6 +88,7 @@ class ProactiveRootResult:
             "stop_depth": self.stop_depth,
             "node_count": len(self.node_indices),
             "executed_depth": self.executed_depth,
+            "depth_limit": self.depth_limit,
         }
 
 
@@ -119,6 +122,7 @@ class ProactiveDraftSession:
         self._disabled_root_ids: set[int] = set()
 
         self._node_root_ids: dict[int, int] = {}
+        self._root_depth_limits: dict[int, int] = {}
         self.result = ProactiveDraftResult(
             planned_depth=planned_depth,
             path_policy=client._path_policy,
@@ -134,7 +138,10 @@ class ProactiveDraftSession:
         self.result.deepest_leaf_count = len(deepest_leaf_indices)
         self.result.max_leaf_depth = max_leaf_depth
         self.result.selected_leaf_count = selected_leaf_count
-        if client._path_policy == "sequence_depth":
+        if client._path_policy in [
+            "sequence_depth",
+            "hybrid_sequence_multi_position",
+        ]:
             self.result.sequence_path_depth = (
                 client._last_sequence_path_depth
             )
@@ -198,6 +205,10 @@ class ProactiveDraftSession:
                 )
             )
 
+        self._root_depth_limits = self._compute_root_depth_limits()
+        for root in self.result.roots:
+            root.depth_limit = self._root_depth_limits.get(root.root_id)
+
         first_root = self.result.roots[0]
         self.result.root_leaf_idx = torch.tensor(
             first_root.leaf_idx, device=client._device
@@ -219,6 +230,26 @@ class ProactiveDraftSession:
             return 1.0
         return coverages[min(layer_index, len(coverages) - 1)]
 
+    def _compute_root_depth_limits(self) -> dict[int, int]:
+        roots = self.result.roots
+        if not roots:
+            return {}
+        planned_depth = max(0, self._planned_depth)
+        if planned_depth == 0:
+            return {root.root_id: 0 for root in roots}
+        if self._client._root_depth_mode == "uniform":
+            return {root.root_id: planned_depth for root in roots}
+        return allocate_root_depth_limits(
+            [
+                (root.root_id, root.joint_probability)
+                for root in roots
+            ],
+            planned_depth=planned_depth,
+            floor_depth=self._client._root_depth_floor,
+            gamma=self._client._root_depth_gamma,
+            secondary_cap=self._client._root_depth_secondary_cap,
+        )
+
     def _candidate_indices_for_step(self) -> tuple[torch.Tensor, set[int]]:
         candidate_indices = torch.where(
             self._tree.status[: self._tree.end] == self._tree.POST_CANDIDATE
@@ -231,6 +262,38 @@ class ProactiveDraftSession:
             self._coverage_for_layer(self.result.executed_depth),
         )
         active_root_ids -= self._disabled_root_ids
+        active_root_ids = {
+            root_id
+            for root_id in active_root_ids
+            if self.result.executed_depth
+            < self._root_depth_limits.get(root_id, self._planned_depth)
+        }
+        if (
+            self._client._path_policy
+            in [
+                "hybrid_sequence",
+                "hybrid_sequence_multi_position",
+                "sequence_depth",
+            ]
+            and self._client._sequence_quota_mode == "primary"
+            and active_root_ids
+        ):
+            candidate_root_ids = {
+                self._node_root_ids[int(index.item())]
+                for index in candidate_indices
+            }
+            available_roots = [
+                root
+                for root in self.result.roots
+                if root.root_id in active_root_ids
+                and root.root_id in candidate_root_ids
+            ]
+            if available_roots:
+                primary_root = max(
+                    available_roots,
+                    key=lambda root: root.joint_probability,
+                )
+                active_root_ids = {primary_root.root_id}
         filtered_indices = [
             int(index.item())
             for index in candidate_indices
@@ -306,7 +369,11 @@ class ProactiveDraftSession:
                     logits, parent_indices, parent_positions, parent_scores
                 )
             )
-        elif self._client._path_policy == "sequence_depth":
+        elif self._client._path_policy in [
+            "hybrid_sequence",
+            "hybrid_sequence_multi_position",
+            "sequence_depth",
+        ]:
             proactive_node_count = self._tree.end - self._tree.prefix_len
             remaining_budget = max(
                 0, self._client._max_budget - proactive_node_count
@@ -408,6 +475,51 @@ class SpecExecProactiveDraft:
         self._min_bonus_per_leaf = config.proactive_multi_min_bonus_per_leaf
         self._max_bonus_per_leaf = config.proactive_multi_max_bonus_per_leaf
         self._max_roots = config.proactive_multi_max_roots
+        self._dynamic_roots = config.proactive_multi_dynamic_roots
+        self._dynamic_mode = config.proactive_multi_dynamic_mode
+        self._dynamic_high_threshold = (
+            config.proactive_multi_dynamic_high_threshold
+        )
+        self._dynamic_mid_threshold = (
+            config.proactive_multi_dynamic_mid_threshold
+        )
+        self._dynamic_high_roots = config.proactive_multi_dynamic_high_roots
+        self._dynamic_mid_roots = config.proactive_multi_dynamic_mid_roots
+        self._dynamic_low_roots = config.proactive_multi_dynamic_low_roots
+        self._dynamic_marginal_min_gain = (
+            config.proactive_multi_dynamic_marginal_min_gain
+        )
+        self._dynamic_high_latency_marginal_min_gain = (
+            config.proactive_multi_dynamic_high_latency_marginal_min_gain
+        )
+        self._dynamic_marginal_cost_weight = (
+            config.proactive_multi_dynamic_marginal_cost_weight
+        )
+        self._dynamic_marginal_confidence_penalty = (
+            config.proactive_multi_dynamic_marginal_confidence_penalty
+        )
+        self._dynamic_online_alpha = (
+            config.proactive_multi_dynamic_online_alpha
+        )
+        self._dynamic_online_warmup_cycles = (
+            config.proactive_multi_dynamic_online_warmup_cycles
+        )
+        self._dynamic_online_exploration_interval = (
+            config.proactive_multi_dynamic_online_exploration_interval
+        )
+        self._dynamic_online_min_reward = (
+            config.proactive_multi_dynamic_online_min_reward
+        )
+        self._dynamic_response_aware_min_reward_ms = (
+            config.proactive_multi_dynamic_response_aware_min_reward_ms
+        )
+        self._dynamic_high_latency_online_min_reward = (
+            config.proactive_multi_dynamic_high_latency_online_min_reward
+        )
+        self._response_mean_ms: Optional[float] = None
+        self._online_cycle_count = 0
+        self._online_reward_by_rank = [0.35] * self._max_roots
+        self._online_trials_by_rank = [0] * self._max_roots
         self._min_root_probability = (
             config.proactive_multi_min_root_probability
         )
@@ -434,8 +546,26 @@ class SpecExecProactiveDraft:
         self._sequence_reuse_depth_bonus = (
             config.proactive_sequence_reuse_depth_bonus
         )
+        self._sequence_stop_ewma_alpha = (
+            config.proactive_sequence_stop_ewma_alpha
+        )
+        self._sequence_multipos_min_path_depth = (
+            config.proactive_sequence_multipos_min_path_depth
+        )
+        self._sequence_anchor_deepest_roots = (
+            config.proactive_sequence_anchor_deepest_roots
+        )
+        self._sequence_quota_mode = config.proactive_sequence_quota_mode
+        self._root_depth_mode = config.proactive_multi_root_depth_mode
+        self._root_depth_floor = config.proactive_multi_root_depth_floor
+        self._root_depth_gamma = config.proactive_multi_root_depth_gamma
+        self._root_depth_secondary_cap = (
+            config.proactive_multi_root_depth_secondary_cap
+        )
+        self._sequence_stop_distribution: Optional[list[float]] = None
         self._last_sequence_path_depth: Optional[int] = None
         self._last_sequence_stop_probabilities: list[float] = []
+        self._next_session_sequence_positions = False
         if self._path_policy == "sequence_depth":
             self._depth_probability_coverage = (
                 config.proactive_sequence_depth_probability_coverage
@@ -448,6 +578,32 @@ class SpecExecProactiveDraft:
     @property
     def last_result(self) -> Optional[ProactiveDraftResult]:
         return self._last_result
+
+    def use_sequence_positions_for_next_session(self, enabled: bool) -> None:
+        self._next_session_sequence_positions = enabled
+
+    def observe_response_mean_ms(self, response_mean_ms: Optional[float]) -> None:
+        self._response_mean_ms = response_mean_ms
+
+    def _online_min_reward_threshold(self) -> float:
+        if (
+            self._dynamic_response_aware_min_reward_ms > 0.0
+            and self._response_mean_ms is not None
+            and self._response_mean_ms
+            >= self._dynamic_response_aware_min_reward_ms
+        ):
+            return self._dynamic_high_latency_online_min_reward
+        return self._dynamic_online_min_reward
+
+    def _marginal_min_gain_threshold(self) -> float:
+        if (
+            self._dynamic_response_aware_min_reward_ms > 0.0
+            and self._response_mean_ms is not None
+            and self._response_mean_ms
+            >= self._dynamic_response_aware_min_reward_ms
+        ):
+            return self._dynamic_high_latency_marginal_min_gain
+        return self._dynamic_marginal_min_gain
 
     @torch.inference_mode()
     def draft(self, full_depth_acceptance: Optional[float] = None):
@@ -469,6 +625,69 @@ class SpecExecProactiveDraft:
             result.tree_prefix_len,
             result.tree_end,
         )
+
+    def observe_sequence_stop_depth(self, accepted_draft_depth: int) -> None:
+        if (
+            self._path_policy != "sequence_depth"
+            or self._sequence_stop_ewma_alpha <= 0.0
+        ):
+            return
+
+        max_depth = max(
+            0,
+            len(self._sequence_acceptance_survival) - 1,
+            accepted_draft_depth,
+        )
+        if self._sequence_stop_distribution is None:
+            self._sequence_stop_distribution = acceptance_stop_probabilities(
+                self._sequence_acceptance_survival,
+                max_depth,
+            )
+        elif len(self._sequence_stop_distribution) < max_depth + 1:
+            self._sequence_stop_distribution.extend(
+                [0.0]
+                * (max_depth + 1 - len(self._sequence_stop_distribution))
+            )
+
+        observed = [0.0] * len(self._sequence_stop_distribution)
+        observed[min(max(0, accepted_draft_depth), len(observed) - 1)] = 1.0
+        alpha = self._sequence_stop_ewma_alpha
+        self._sequence_stop_distribution = [
+            alpha * current + (1.0 - alpha) * previous
+            for previous, current in zip(
+                self._sequence_stop_distribution,
+                observed,
+            )
+        ]
+        total = sum(self._sequence_stop_distribution)
+        if total > 0.0:
+            self._sequence_stop_distribution = [
+                value / total for value in self._sequence_stop_distribution
+            ]
+
+    def _sequence_stop_probabilities(self, path_depth: int) -> list[float]:
+        base = acceptance_stop_probabilities(
+            self._sequence_acceptance_survival,
+            path_depth,
+        )
+        if (
+            self._sequence_stop_distribution is None
+            or self._sequence_stop_ewma_alpha <= 0.0
+        ):
+            return base
+
+        adapted = self._sequence_stop_distribution
+        values = []
+        for depth in range(path_depth + 1):
+            if depth < path_depth:
+                values.append(adapted[depth] if depth < len(adapted) else 0.0)
+            else:
+                values.append(sum(adapted[depth:]) if depth < len(adapted) else 0.0)
+
+        total = sum(values)
+        if total <= 0.0:
+            return base
+        return [value / total for value in values]
 
     def start_session(
         self,
@@ -511,76 +730,47 @@ class SpecExecProactiveDraft:
             return [candidate], [candidate.leaf_idx], leaf_depth, 1
 
         if self._path_policy == "sequence_depth":
+            return self._get_sequence_position_root_candidates()
+
+        if (
+            self._path_policy == "hybrid_sequence_multi_position"
+            and self._next_session_sequence_positions
+        ):
             path_indices = self._get_main_sequence_nodes()
-            if path_indices.numel() == 0:
-                return [], [], None, 0
-
-            input_ids = self._tree.tokens[path_indices].unsqueeze(0)
-            position_ids = self._tree.positions[path_indices].unsqueeze(0)
-            attention_mask = self._tree.amask[..., path_indices, :]
-            cache_batch_indices = torch.zeros_like(
-                path_indices,
-                dtype=torch.long,
-                device=self._device,
-            )
-            logits = self._engine.forward(
-                input_ids=input_ids,
-                position_ids=position_ids,
-                cache_batch_indices=cache_batch_indices,
-                cache_seq_indices=path_indices,
-                attention_mask=attention_mask,
-            )
-            logits = logits[0, -path_indices.numel() :, :]
-            bonus = torch.log_softmax(logits, dim=-1).topk(
-                k=self._sequence_max_bonus_per_depth,
-                dim=-1,
-                sorted=True,
-            )
             path_depth = path_indices.numel() - 1
-            stop_probabilities = acceptance_stop_probabilities(
-                self._sequence_acceptance_survival,
-                path_depth,
-            )
-            self._last_sequence_path_depth = path_depth
-            self._last_sequence_stop_probabilities = stop_probabilities
-            candidates = select_sequence_bonus_candidates(
-                path_indices,
-                stop_probabilities,
-                bonus.indices,
-                bonus.values,
-                max_bonus_per_depth=(
-                    self._sequence_max_bonus_per_depth
-                ),
-                max_roots=self._sequence_max_roots,
-                min_root_probability=(
-                    self._sequence_min_root_probability
-                ),
-                min_bonus_probability=(
-                    self._sequence_min_bonus_probability
-                ),
-                selection_score=self._sequence_selection_score,
-                reuse_depth_bonus=self._sequence_reuse_depth_bonus,
-            )
-            selected_depths = {
-                candidate.stop_depth for candidate in candidates
-            }
+            if (
+                path_indices.numel() > 0
+                and path_depth >= self._sequence_multipos_min_path_depth
+            ):
+                if self._sequence_anchor_deepest_roots:
+                    return self._get_anchored_sequence_root_candidates(
+                        path_indices,
+                        full_depth_acceptance,
+                    )
+                return self._get_sequence_position_root_candidates(
+                    path_indices
+                )
             self._logger.debug(
-                "Sequence depth roots: path_depth=%d depths=%d roots=%d",
+                "Sequence position roots skipped: path_depth=%d min_depth=%d",
                 path_depth,
-                len(selected_depths),
-                len(candidates),
-            )
-            return (
-                candidates,
-                [int(path_indices[-1].item())],
-                path_depth,
-                len(selected_depths),
+                self._sequence_multipos_min_path_depth,
             )
 
-        if self._path_policy != "deepest_multi":
+        if self._path_policy not in [
+            "deepest_multi",
+            "hybrid_sequence",
+            "hybrid_sequence_multi_position",
+        ]:
             raise ValueError(
                 f"Invalid proactive path policy: {self._path_policy}"
             )
+
+        return self._get_deepest_root_candidates(full_depth_acceptance)
+
+    def _get_deepest_root_candidates(
+        self,
+        full_depth_acceptance: Optional[float],
+    ) -> tuple[list[ProactiveRootCandidate], list[int], Optional[int], int]:
 
         leaf_indices = self._get_leaves_nodes()
         if leaf_indices.numel() == 0:
@@ -616,25 +806,67 @@ class SpecExecProactiveDraft:
             dim=-1,
             sorted=True,
         )
+        max_roots = self._max_roots
+        max_deepest_leaves = self._max_deepest_leaves
+        confidence = None
+        if self._dynamic_roots and self._dynamic_mode == "threshold":
+            selected_offsets = torch.topk(
+                self._tree.logprobs[deepest_leaf_indices],
+                k=min(deepest_leaf_indices.numel(), self._max_deepest_leaves),
+                sorted=True,
+            ).indices
+            selected_leaf_scores = self._tree.logprobs[
+                deepest_leaf_indices[selected_offsets]
+            ]
+            leaf_probabilities = torch.softmax(
+                selected_leaf_scores / self._leaf_temperature,
+                dim=0,
+            )
+            top_leaf_probability = float(leaf_probabilities[0].item())
+            top_bonus_probability = float(bonus.values[selected_offsets[0], 0].exp().item())
+            confidence = top_leaf_probability * top_bonus_probability
+            if confidence >= self._dynamic_high_threshold:
+                max_roots = self._dynamic_high_roots
+            elif confidence >= self._dynamic_mid_threshold:
+                max_roots = self._dynamic_mid_roots
+            else:
+                max_roots = self._dynamic_low_roots
+            max_roots = max(1, min(self._max_roots, max_roots))
+            max_deepest_leaves = max(
+                1,
+                min(self._max_deepest_leaves, max_roots),
+            )
         candidates, selected_leaf_count = select_bonus_candidates(
             deepest_leaf_indices,
             self._tree.logprobs[deepest_leaf_indices],
             bonus.indices,
             bonus.values,
             full_depth_acceptance=full_depth_acceptance,
-            max_deepest_leaves=self._max_deepest_leaves,
+            max_deepest_leaves=max_deepest_leaves,
             min_bonus_per_leaf=self._min_bonus_per_leaf,
             max_bonus_per_leaf=self._max_bonus_per_leaf,
-            max_roots=self._max_roots,
+            max_roots=max_roots,
             min_root_probability=self._min_root_probability,
             leaf_temperature=self._leaf_temperature,
         )
+        if self._dynamic_roots and self._dynamic_mode == "marginal":
+            candidates = self._select_marginal_roots(candidates)
+            selected_leaf_count = len({candidate.leaf_idx for candidate in candidates})
+            max_roots = len(candidates)
+        elif self._dynamic_roots and self._dynamic_mode == "online_marginal":
+            candidates = self._select_online_marginal_roots(candidates)
+            selected_leaf_count = len({candidate.leaf_idx for candidate in candidates})
+            max_roots = len(candidates)
         self._logger.debug(
-            "Deepest multi roots: depth=%d leaves=%d selected_leaves=%d roots=%d",
+            "Deepest roots: policy=%s dynamic=%s depth=%d leaves=%d selected_leaves=%d roots=%d confidence=%s max_roots=%d",
+            self._path_policy,
+            self._dynamic_mode if self._dynamic_roots else "-",
             max_leaf_depth,
             deepest_leaf_indices.numel(),
             selected_leaf_count,
             len(candidates),
+            f"{confidence:.3f}" if confidence is not None else "-",
+            max_roots,
         )
         return (
             candidates,
@@ -642,6 +874,290 @@ class SpecExecProactiveDraft:
             max_leaf_depth,
             selected_leaf_count,
         )
+
+    def _get_sequence_position_root_candidates(
+        self,
+        path_indices: Optional[torch.Tensor] = None,
+        *,
+        apply_dynamic_roots: bool = True,
+        max_roots_override: Optional[int] = None,
+    ) -> tuple[list[ProactiveRootCandidate], list[int], Optional[int], int]:
+        if path_indices is None:
+            path_indices = self._get_main_sequence_nodes()
+        if path_indices.numel() == 0:
+            return [], [], None, 0
+
+        input_ids = self._tree.tokens[path_indices].unsqueeze(0)
+        position_ids = self._tree.positions[path_indices].unsqueeze(0)
+        attention_mask = self._tree.amask[..., path_indices, :]
+        cache_batch_indices = torch.zeros_like(
+            path_indices,
+            dtype=torch.long,
+            device=self._device,
+        )
+        logits = self._engine.forward(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            cache_batch_indices=cache_batch_indices,
+            cache_seq_indices=path_indices,
+            attention_mask=attention_mask,
+        )
+        logits = logits[0, -path_indices.numel() :, :]
+        path_logprobs = torch.log_softmax(logits, dim=-1)
+        bonus = path_logprobs.topk(
+            k=self._sequence_max_bonus_per_depth,
+            dim=-1,
+            sorted=True,
+        )
+        path_depth = path_indices.numel() - 1
+        stop_probabilities = self._sequence_stop_probabilities(path_depth)
+        if (
+            self._sequence_selection_score == "confidence_stop"
+            and path_indices.numel() > 1
+        ):
+            next_token_ids = self._tree.tokens[path_indices[1:]]
+            continuation_probs = path_logprobs[
+                torch.arange(
+                    path_indices.numel() - 1,
+                    device=self._device,
+                ),
+                next_token_ids,
+            ].exp()
+            confidence_stop_probabilities = []
+            prefix_accept_probability = 1.0
+            for probability in continuation_probs.tolist():
+                probability = min(1.0, max(0.0, float(probability)))
+                confidence_stop_probabilities.append(
+                    prefix_accept_probability * (1.0 - probability)
+                )
+                prefix_accept_probability *= probability
+            confidence_stop_probabilities.append(prefix_accept_probability)
+            stop_probabilities = confidence_stop_probabilities
+        excluded_token_ids = torch.full(
+            (path_indices.numel(),),
+            -1,
+            dtype=torch.long,
+            device=self._device,
+        )
+        if path_indices.numel() > 1:
+            excluded_token_ids[:-1] = self._tree.tokens[
+                path_indices[1:]
+            ]
+        self._last_sequence_path_depth = path_depth
+        self._last_sequence_stop_probabilities = stop_probabilities
+        max_roots = (
+            self._sequence_max_roots
+            if max_roots_override is None
+            else max_roots_override
+        )
+        if self._path_policy == "hybrid_sequence_multi_position":
+            max_roots = min(max_roots, self._max_roots)
+
+        candidates = select_sequence_bonus_candidates(
+            path_indices,
+            stop_probabilities,
+            bonus.indices,
+            bonus.values,
+            max_bonus_per_depth=(
+                self._sequence_max_bonus_per_depth
+            ),
+            max_roots=max_roots,
+            min_root_probability=(
+                self._sequence_min_root_probability
+            ),
+            min_bonus_probability=(
+                self._sequence_min_bonus_probability
+            ),
+            min_stop_depth=config.proactive_sequence_min_stop_depth,
+            excluded_token_ids=excluded_token_ids,
+            selection_score=self._sequence_selection_score,
+            reuse_depth_bonus=self._sequence_reuse_depth_bonus,
+        )
+        if (
+            apply_dynamic_roots
+            and self._path_policy == "hybrid_sequence_multi_position"
+            and self._dynamic_roots
+            and self._dynamic_mode == "marginal"
+        ):
+            candidates = self._select_marginal_roots(candidates)
+        elif (
+            apply_dynamic_roots
+            and self._path_policy == "hybrid_sequence_multi_position"
+            and self._dynamic_roots
+            and self._dynamic_mode == "online_marginal"
+        ):
+            candidates = self._select_online_marginal_roots(candidates)
+        selected_depths = {
+            candidate.stop_depth for candidate in candidates
+        }
+        self._logger.debug(
+            "Sequence position roots: policy=%s dynamic=%s path_depth=%d depths=%d roots=%d max_roots=%d",
+            self._path_policy,
+            self._dynamic_mode if self._dynamic_roots else "-",
+            path_depth,
+            len(selected_depths),
+            len(candidates),
+            max_roots,
+        )
+        return (
+            candidates,
+            [int(path_indices[-1].item())],
+            path_depth,
+            len(selected_depths),
+        )
+
+    def _get_anchored_sequence_root_candidates(
+        self,
+        path_indices: torch.Tensor,
+        full_depth_acceptance: Optional[float],
+    ) -> tuple[list[ProactiveRootCandidate], list[int], Optional[int], int]:
+        (
+            deepest_candidates,
+            deepest_indices,
+            max_leaf_depth,
+            _,
+        ) = self._get_deepest_root_candidates(full_depth_acceptance)
+        (
+            sequence_candidates,
+            _,
+            sequence_depth,
+            _,
+        ) = self._get_sequence_position_root_candidates(
+            path_indices,
+            apply_dynamic_roots=False,
+            max_roots_override=self._max_roots,
+        )
+
+        candidates: list[ProactiveRootCandidate] = []
+        used_pairs: set[tuple[int, int]] = set()
+        for candidate in deepest_candidates + sequence_candidates:
+            pair = (candidate.leaf_idx, candidate.token_id)
+            if pair in used_pairs:
+                continue
+            candidates.append(candidate)
+            used_pairs.add(pair)
+            if len(candidates) >= self._max_roots:
+                break
+
+        selected_leaf_count = len({candidate.leaf_idx for candidate in candidates})
+        self._logger.debug(
+            "Anchored sequence roots: path_depth=%d deepest=%d sequence=%d roots=%d",
+            sequence_depth if sequence_depth is not None else -1,
+            len(deepest_candidates),
+            len(sequence_candidates),
+            len(candidates),
+        )
+        return candidates, deepest_indices, max_leaf_depth, selected_leaf_count
+
+    def _select_marginal_roots(
+        self,
+        candidates: list[ProactiveRootCandidate],
+    ) -> list[ProactiveRootCandidate]:
+        if not candidates:
+            return []
+
+        sorted_candidates = sorted(
+            candidates,
+            key=lambda candidate: (
+                candidate.joint_probability,
+                candidate.bonus_probability,
+                candidate.leaf_probability,
+            ),
+            reverse=True,
+        )
+        top = sorted_candidates[0]
+        top_joint = max(top.joint_probability, 1e-12)
+        top_confidence = min(1.0, max(0.0, top.joint_probability))
+        required_gain = self._marginal_min_gain_threshold() * (
+            1.0
+            + self._dynamic_marginal_confidence_penalty * top_confidence
+        )
+
+        selected = [top]
+        used_pairs = {(top.leaf_idx, top.token_id)}
+        for candidate in sorted_candidates[1:]:
+            if len(selected) >= self._max_roots:
+                break
+            pair = (candidate.leaf_idx, candidate.token_id)
+            if pair in used_pairs:
+                continue
+
+            root_count = len(selected) + 1
+            relative_probability = candidate.joint_probability / top_joint
+            cost = 1.0 + self._dynamic_marginal_cost_weight * (root_count - 1)
+            marginal_gain = relative_probability / cost
+            if marginal_gain < required_gain:
+                continue
+
+            selected.append(candidate)
+            used_pairs.add(pair)
+
+        return selected
+
+    def _select_online_marginal_roots(
+        self,
+        candidates: list[ProactiveRootCandidate],
+    ) -> list[ProactiveRootCandidate]:
+        selected = self._select_marginal_roots(candidates)
+        if len(selected) <= 1:
+            return selected
+
+        self._online_cycle_count += 1
+        in_warmup = (
+            self._online_cycle_count
+            <= self._dynamic_online_warmup_cycles
+        )
+        exploring = (
+            self._dynamic_online_exploration_interval > 0
+            and self._online_cycle_count
+            % self._dynamic_online_exploration_interval
+            == 0
+        )
+        if in_warmup or exploring:
+            return selected
+
+        gated = [selected[0]]
+        min_reward = self._online_min_reward_threshold()
+        for rank, candidate in enumerate(selected[1:], start=1):
+            if rank >= len(self._online_reward_by_rank):
+                break
+            if self._online_trials_by_rank[rank] == 0:
+                gated.append(candidate)
+                continue
+            if (
+                self._online_reward_by_rank[rank]
+                >= min_reward
+            ):
+                gated.append(candidate)
+        return gated
+
+    def observe_root_outcome(
+        self,
+        result: ProactiveDraftResult,
+        matched_root_id: Optional[int],
+    ) -> None:
+        if not (
+            self._dynamic_roots
+            and self._dynamic_mode == "online_marginal"
+        ):
+            return
+        alpha = self._dynamic_online_alpha
+        if alpha <= 0.0:
+            return
+        for root in result.roots:
+            rank = root.root_id
+            if rank >= len(self._online_reward_by_rank):
+                continue
+            reward = (
+                float(root.executed_depth)
+                if matched_root_id == root.root_id
+                else 0.0
+            )
+            previous = self._online_reward_by_rank[rank]
+            self._online_reward_by_rank[rank] = (
+                alpha * reward + (1.0 - alpha) * previous
+            )
+            self._online_trials_by_rank[rank] += 1
 
     def _get_main_sequence_nodes(self) -> torch.Tensor:
         """Return prefix tail plus the highest-probability deepest path."""

@@ -22,6 +22,15 @@ message ValidateRequest {
 message ValidateResponse {
     bytes selection = 1;
     int32 prefill = 2;
+    double queue_wait_ms = 3;
+    double server_compute_ms = 4;
+    double server_response_ms = 5;
+    double decode_ms = 6;
+    double model_decode_ms = 7;
+    double prefill_ms = 8;
+    int32 batch_size = 9;
+    int32 queue_length = 10;
+    double background_arrival_rate = 11;
 }
 
 message SyncRequest { }

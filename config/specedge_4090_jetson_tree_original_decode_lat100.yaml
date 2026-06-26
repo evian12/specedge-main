@@ -3,7 +3,7 @@ opt: 2
 
 base:
   result_path: "result/4090_jetson"
-  exp_name: "specedge_deepest_multi"
+  exp_name: "specedge_tree_original_decode_lat100"
   dtype: fp16
   seed: 42
   ssh_key: ~/.ssh/id_ed25519
@@ -18,44 +18,32 @@ server:
   num_clients: 1
   batch_type: static
   cache_prefill: true
+  simulated_latency_ms: 0.0
+  simulated_decode_latency_ms: 100.0
 
 client:
   host: 127.0.0.1:18001
   process_name: client
   draft_model: /home/yypan/models/TinyLlama-1.1B
   dataset: specbench
-  reasoning: False
+  reasoning: false
   sample_req_cnt: 8
   req_offset: 0
   max_n_beams: 32
   max_beam_len: 4
   max_branch_width: 16
   max_budget: 32
+  initial_draft:
+    mode: fixed
+    structure: tree
   proactive:
     type: excluded
-    mode: adaptive
-    path_policy: deepest_multi
+    mode: baseline
+    path_policy: single_best
     max_n_beams: 32
     max_beam_len: 3
     max_branch_width: 16
     max_budget: 32
-    multi:
-      max_deepest_leaves: 4
-      min_bonus_per_leaf: 1
-      max_bonus_per_leaf: 4
-      max_roots: 4
-      min_root_probability: 0.01
-      leaf_temperature: 1.0
-      full_depth_prior: 0.5
-      acceptance_ewma_alpha: 0.1
-      depth_probability_coverage: [1.0, 0.8, 0.5]
-    adaptive:
-      ewma_alpha: 0.2
-      min_alignment_rate: 0.1
-      warmup_cycles: 4
-      exploration_interval: 8
-      safety_margin_ms: 2.0
-      uncertainty_scale: 1.0
   max_new_tokens: 64
   max_request_num: -1
 

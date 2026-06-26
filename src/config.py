@@ -120,43 +120,9 @@ class SpecEdgeClientConfig(metaclass=_ConfigMeta):
         cls.initial_draft_structure = cls._from_env_default(
             "SPECEDGE_INITIAL_DRAFT_STRUCTURE", "tree"
         )
-        cls.initial_draft_candidate_depths = [
-            int(value)
-            for value in json.loads(
-                cls._from_env_default(
-                    "SPECEDGE_INITIAL_DRAFT_CANDIDATE_DEPTHS",
-                    f"[{cls.max_beam_len}]",
-                )
-            )
-        ]
-        cls.initial_draft_warmup_per_depth = int(
-            cls._from_env_default(
-                "SPECEDGE_INITIAL_DRAFT_WARMUP_PER_DEPTH", "4"
-            )
-        )
-        cls.initial_draft_exploration_weight = float(
-            cls._from_env_default(
-                "SPECEDGE_INITIAL_DRAFT_EXPLORATION_WEIGHT", "0.3"
-            )
-        )
-        cls.initial_draft_forced_exploration_interval = int(
-            cls._from_env_default(
-                "SPECEDGE_INITIAL_DRAFT_FORCED_EXPLORATION_INTERVAL", "32"
-            )
-        )
-        cls.initial_draft_ridge_lambda = float(
-            cls._from_env_default(
-                "SPECEDGE_INITIAL_DRAFT_RIDGE_LAMBDA", "1.0"
-            )
-        )
         cls.initial_draft_reward_clip = float(
             cls._from_env_default(
                 "SPECEDGE_INITIAL_DRAFT_REWARD_CLIP", "20.0"
-            )
-        )
-        cls.initial_draft_ewma_alpha = float(
-            cls._from_env_default(
-                "SPECEDGE_INITIAL_DRAFT_EWMA_ALPHA", "0.2"
             )
         )
         cls.initial_draft_local_initial_depth = int(
@@ -164,6 +130,9 @@ class SpecEdgeClientConfig(metaclass=_ConfigMeta):
                 "SPECEDGE_INITIAL_DRAFT_LOCAL_INITIAL_DEPTH",
                 str(cls.max_beam_len),
             )
+        )
+        cls.initial_draft_local_controller = cls._from_env_default(
+            "SPECEDGE_INITIAL_DRAFT_LOCAL_CONTROLLER", "state"
         )
         cls.initial_draft_local_min_depth = int(
             cls._from_env_default(
@@ -402,6 +371,145 @@ class SpecEdgeClientConfig(metaclass=_ConfigMeta):
                 )
             )
         ]
+        cls.proactive_multi_root_depth_mode = cls._from_env_default(
+            "SPECEDGE_PROACTIVE_MULTI_ROOT_DEPTH_MODE",
+            "uniform",
+        )
+        cls.proactive_multi_root_depth_floor = int(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_ROOT_DEPTH_FLOOR",
+                "1",
+            )
+        )
+        cls.proactive_multi_root_depth_gamma = float(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_ROOT_DEPTH_GAMMA",
+                "0.5",
+            )
+        )
+        cls.proactive_multi_root_depth_secondary_cap = int(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_ROOT_DEPTH_SECONDARY_CAP",
+                "0",
+            )
+        )
+        cls.proactive_multi_dynamic_roots = (
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_ROOTS",
+                "False",
+            )
+            == "True"
+        )
+        cls.proactive_multi_dynamic_mode = cls._from_env_default(
+            "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_MODE",
+            "threshold",
+        )
+        cls.proactive_multi_dynamic_high_threshold = float(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_HIGH_THRESHOLD",
+                "0.7",
+            )
+        )
+        cls.proactive_multi_dynamic_mid_threshold = float(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_MID_THRESHOLD",
+                "0.4",
+            )
+        )
+        cls.proactive_multi_dynamic_high_roots = int(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_HIGH_ROOTS",
+                "1",
+            )
+        )
+        cls.proactive_multi_dynamic_mid_roots = int(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_MID_ROOTS",
+                "2",
+            )
+        )
+        cls.proactive_multi_dynamic_low_roots = int(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_LOW_ROOTS",
+                str(cls.proactive_multi_max_roots),
+            )
+        )
+        cls.proactive_multi_dynamic_marginal_min_gain = float(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_MARGINAL_MIN_GAIN",
+                "0.35",
+            )
+        )
+        cls.proactive_multi_dynamic_high_latency_marginal_min_gain = float(
+            cls._from_env_default(
+                (
+                    "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_"
+                    "HIGH_LATENCY_MARGINAL_MIN_GAIN"
+                ),
+                str(cls.proactive_multi_dynamic_marginal_min_gain),
+            )
+        )
+        cls.proactive_multi_dynamic_marginal_cost_weight = float(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_MARGINAL_COST_WEIGHT",
+                "0.5",
+            )
+        )
+        cls.proactive_multi_dynamic_marginal_confidence_penalty = float(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_MARGINAL_CONFIDENCE_PENALTY",
+                "0.5",
+            )
+        )
+        cls.proactive_multi_dynamic_online_alpha = float(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_ONLINE_ALPHA",
+                "0.15",
+            )
+        )
+        cls.proactive_multi_dynamic_online_warmup_cycles = int(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_ONLINE_WARMUP_CYCLES",
+                "64",
+            )
+        )
+        cls.proactive_multi_dynamic_online_exploration_interval = int(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_ONLINE_EXPLORATION_INTERVAL",
+                "16",
+            )
+        )
+        cls.proactive_multi_dynamic_online_min_reward = float(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_ONLINE_MIN_REWARD",
+                "0.30",
+            )
+        )
+        cls.proactive_multi_dynamic_response_aware_min_reward_ms = float(
+            cls._from_env_default(
+                (
+                    "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_"
+                    "RESPONSE_AWARE_MIN_REWARD_MS"
+                ),
+                "0.0",
+            )
+        )
+        cls.proactive_multi_dynamic_high_latency_online_min_reward = float(
+            cls._from_env_default(
+                (
+                    "SPECEDGE_PROACTIVE_MULTI_DYNAMIC_"
+                    "HIGH_LATENCY_ONLINE_MIN_REWARD"
+                ),
+                str(cls.proactive_multi_dynamic_online_min_reward),
+            )
+        )
+        cls.proactive_reuse_refill = (
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_REUSE_REFILL",
+                "False",
+            )
+            == "True"
+        )
         cls.proactive_sequence_acceptance_survival = [
             float(value)
             for value in json.loads(
@@ -435,6 +543,12 @@ class SpecEdgeClientConfig(metaclass=_ConfigMeta):
                 "0.0",
             )
         )
+        cls.proactive_sequence_min_stop_depth = int(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_SEQUENCE_MIN_STOP_DEPTH",
+                "0",
+            )
+        )
         cls.proactive_sequence_selection_score = cls._from_env_default(
             "SPECEDGE_PROACTIVE_SEQUENCE_SELECTION_SCORE",
             "joint",
@@ -444,6 +558,41 @@ class SpecEdgeClientConfig(metaclass=_ConfigMeta):
                 "SPECEDGE_PROACTIVE_SEQUENCE_REUSE_DEPTH_BONUS",
                 "0.0",
             )
+        )
+        cls.proactive_sequence_stop_ewma_alpha = float(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_SEQUENCE_STOP_EWMA_ALPHA",
+                "0.0",
+            )
+        )
+        cls.proactive_sequence_min_initial_depth = int(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_SEQUENCE_MIN_INITIAL_DEPTH",
+                "0",
+            )
+        )
+        cls.proactive_sequence_multipos_min_path_depth = int(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_SEQUENCE_MULTIPOS_MIN_PATH_DEPTH",
+                "0",
+            )
+        )
+        cls.proactive_sequence_multipos_min_response_ms = float(
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_SEQUENCE_MULTIPOS_MIN_RESPONSE_MS",
+                "0.0",
+            )
+        )
+        cls.proactive_sequence_anchor_deepest_roots = (
+            cls._from_env_default(
+                "SPECEDGE_PROACTIVE_SEQUENCE_ANCHOR_DEEPEST_ROOTS",
+                "False",
+            )
+            == "True"
+        )
+        cls.proactive_sequence_quota_mode = cls._from_env_default(
+            "SPECEDGE_PROACTIVE_SEQUENCE_QUOTA_MODE",
+            "all",
         )
         cls.proactive_sequence_depth_probability_coverage = [
             float(value)
@@ -487,12 +636,39 @@ class SpecEdgeClientConfig(metaclass=_ConfigMeta):
                 "SPECEDGE_PROACTIVE_ADAPTIVE_UNCERTAINTY_SCALE", "1.0"
             )
         )
+        cls.proactive_adaptive_layer_deadline_mode = cls._from_env_default(
+            "SPECEDGE_PROACTIVE_ADAPTIVE_LAYER_DEADLINE_MODE",
+            "per_layer",
+        )
 
         # token generation configuration
         cls.max_new_tokens = int(cls._from_env("SPECEDGE_MAX_NEW_TOKENS"))
         cls.max_request_num = int(cls._from_env("SPECEDGE_MAX_REQUEST_NUM"))
         cls.req_offset = int(cls._from_env("SPECEDGE_REQ_OFFSET"))
         cls.sample_req_cnt = int(cls._from_env("SPECEDGE_SAMPLE_REQ_CNT"))
+
+        # load-aware AR / SpecEdge switching configuration
+        cls.decode_mode = cls._from_env_default(
+            "SPECEDGE_DECODE_MODE",
+            "specedge",
+        )
+        cls.adaptive_mode = (
+            cls._from_env_default("SPECEDGE_ADAPTIVE_MODE", "False")
+            == "True"
+        )
+        cls.switch_threshold_ms = float(
+            cls._from_env_default("SPECEDGE_SWITCH_THRESHOLD_MS", "50.0")
+        )
+        cls.decision_window = int(
+            cls._from_env_default("SPECEDGE_DECISION_WINDOW", "16")
+        )
+        cls.estimator_alpha = float(
+            cls._from_env_default("SPECEDGE_ESTIMATOR_ALPHA", "0.2")
+        )
+        cls.adaptive_initial_mode = cls._from_env_default(
+            "SPECEDGE_ADAPTIVE_INITIAL_MODE",
+            "specedge",
+        )
 
         # server configuration
         cls.host = cls._from_env("SPECEDGE_HOST")
@@ -593,6 +769,106 @@ class SpecEdgeBatchServerConfig(metaclass=_ConfigMeta):
                 "SPECEDGE_SIMULATED_DECODE_LATENCY_MS",
                 "0.0",
             )
+        )
+        cls.validate_timeout_s = float(
+            cls._from_env_default("SPECEDGE_VALIDATE_TIMEOUT_S", "120.0")
+        )
+        cls.scheduler_tick_ms = float(
+            cls._from_env_default("SPECEDGE_SCHEDULER_TICK_MS", "5.0")
+        )
+        cls.background_load = cls._from_env_default(
+            "SPECEDGE_BACKGROUND_LOAD", "0"
+        )
+        cls.background_arrival_rate = float(
+            cls._from_env_default(
+                "SPECEDGE_BACKGROUND_ARRIVAL_RATE",
+                "0.0",
+            )
+        )
+        cls.background_profile = cls._from_env_default(
+            "SPECEDGE_BACKGROUND_PROFILE", "constant"
+        )
+        cls.background_step_schedule = cls._from_env_default(
+            "SPECEDGE_BACKGROUND_STEP_SCHEDULE", ""
+        )
+        cls.background_bursty_base_rate = float(
+            cls._from_env_default(
+                "SPECEDGE_BACKGROUND_BURSTY_BASE_RATE",
+                str(cls.background_arrival_rate),
+            )
+        )
+        cls.background_bursty_burst_rate = float(
+            cls._from_env_default(
+                "SPECEDGE_BACKGROUND_BURSTY_BURST_RATE",
+                str(max(cls.background_arrival_rate, 1.0)),
+            )
+        )
+        cls.background_bursty_trigger_rate = float(
+            cls._from_env_default(
+                "SPECEDGE_BACKGROUND_BURSTY_TRIGGER_RATE",
+                "0.05",
+            )
+        )
+        cls.background_bursty_min_duration_s = float(
+            cls._from_env_default(
+                "SPECEDGE_BACKGROUND_BURSTY_MIN_DURATION_S",
+                "5.0",
+            )
+        )
+        cls.background_bursty_max_duration_s = float(
+            cls._from_env_default(
+                "SPECEDGE_BACKGROUND_BURSTY_MAX_DURATION_S",
+                "15.0",
+            )
+        )
+        cls.background_max_active_requests = int(
+            cls._from_env_default(
+                "SPECEDGE_BACKGROUND_MAX_ACTIVE_REQUESTS",
+                "0",
+            )
+        )
+        cls.background_prompt_min_tokens = int(
+            cls._from_env_default(
+                "SPECEDGE_BACKGROUND_PROMPT_MIN_TOKENS",
+                "16",
+            )
+        )
+        cls.background_prompt_max_tokens = int(
+            cls._from_env_default(
+                "SPECEDGE_BACKGROUND_PROMPT_MAX_TOKENS",
+                "128",
+            )
+        )
+        cls.background_generation_min_tokens = int(
+            cls._from_env_default(
+                "SPECEDGE_BACKGROUND_GENERATION_MIN_TOKENS",
+                "16",
+            )
+        )
+        cls.background_generation_max_tokens = int(
+            cls._from_env_default(
+                "SPECEDGE_BACKGROUND_GENERATION_MAX_TOKENS",
+                "64",
+            )
+        )
+        cls.background_queue_poll_ms = float(
+            cls._from_env_default(
+                "SPECEDGE_BACKGROUND_QUEUE_POLL_MS",
+                "5.0",
+            )
+        )
+        cls.background_start_delay_s = float(
+            cls._from_env_default(
+                "SPECEDGE_BACKGROUND_START_DELAY_S",
+                "0.0",
+            )
+        )
+        cls.background_start_on_first_foreground = (
+            cls._from_env_default(
+                "SPECEDGE_BACKGROUND_START_ON_FIRST_FOREGROUND",
+                "False",
+            )
+            == "True"
         )
 
         cls._initialized = True

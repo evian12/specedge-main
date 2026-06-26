@@ -3,7 +3,7 @@ opt: 2
 
 base:
   result_path: "result/4090_jetson"
-  exp_name: "specedge_amd135m"
+  exp_name: "specedge_tree_original_decode_lat50"
   dtype: fp16
   seed: 42
   ssh_key: ~/.ssh/id_ed25519
@@ -18,11 +18,13 @@ server:
   num_clients: 1
   batch_type: static
   cache_prefill: true
+  simulated_latency_ms: 0.0
+  simulated_decode_latency_ms: 50.0
 
 client:
   host: 127.0.0.1:18001
   process_name: client
-  draft_model: /home/yypan/models/AMD-Llama-135m
+  draft_model: /home/yypan/models/TinyLlama-1.1B
   dataset: specbench
   reasoning: false
   sample_req_cnt: 8
@@ -33,8 +35,11 @@ client:
   max_budget: 32
   initial_draft:
     mode: fixed
+    structure: tree
   proactive:
     type: excluded
+    mode: baseline
+    path_policy: single_best
     max_n_beams: 32
     max_beam_len: 3
     max_branch_width: 16

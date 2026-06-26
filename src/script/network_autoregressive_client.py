@@ -71,6 +71,12 @@ async def main() -> None:
             server_elapsed_times = []
             decode_times = []
             model_decode_times = []
+            server_response_times = []
+            queue_wait_times = []
+            server_compute_times = []
+            batch_sizes = []
+            queue_lengths = []
+            background_arrival_rates = []
             token_ids = []
             prefill_ms = None
             prompt_tokens = None
@@ -100,6 +106,23 @@ async def main() -> None:
                             response["decode_ms"],
                         )
                     )
+                )
+                server_response_times.append(
+                    float(response.get("server_response_ms", response["decode_ms"]))
+                )
+                queue_wait_times.append(float(response.get("queue_wait_ms", 0.0)))
+                server_compute_times.append(
+                    float(
+                        response.get(
+                            "server_compute_ms",
+                            response.get("decode_ms", 0.0),
+                        )
+                    )
+                )
+                batch_sizes.append(int(response.get("batch_size", 0)))
+                queue_lengths.append(int(response.get("queue_length", 0)))
+                background_arrival_rates.append(
+                    float(response.get("background_arrival_rate", 0.0))
                 )
                 token_ids.append(int(response["token_id"]))
                 prefill_ms = float(response["prefill_ms"])
@@ -150,6 +173,12 @@ async def main() -> None:
                     "server_prefill_ms": prefill_ms,
                     "server_decode_ms": decode_times,
                     "server_model_decode_ms": model_decode_times,
+                    "server_response_ms": server_response_times,
+                    "queue_wait_ms": queue_wait_times,
+                    "server_compute_ms": server_compute_times,
+                    "batch_size": batch_sizes,
+                    "queue_length": queue_lengths,
+                    "background_arrival_rate": background_arrival_rates,
                     "simulated_decode_latency_ms": float(
                         response.get("simulated_decode_latency_ms", 0.0)
                     ),

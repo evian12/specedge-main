@@ -1,0 +1,121 @@
+version: 1
+opt: 2
+
+base:
+  result_path: "result/4090_jetson"
+  exp_name: "specedge_tree_prob_depth_response_only_v2_decode_lat200"
+  dtype: fp16
+  seed: 42
+  ssh_key: ~/.ssh/id_ed25519
+  max_len: 2048
+
+server:
+  process_name: server
+  target_model: /home/yypan/models/Llama-2-7b-chat-hf
+  device: cuda:0
+  temperature: 0.7
+  max_batch_size: 1
+  num_clients: 1
+  batch_type: static
+  cache_prefill: true
+  simulated_latency_ms: 0.0
+  simulated_decode_latency_ms: 200.0
+
+client:
+  host: 127.0.0.1:18001
+  process_name: client
+  draft_model: /home/yypan/models/TinyLlama-1.1B
+  dataset: specbench
+  reasoning: false
+  sample_req_cnt: 8
+  req_offset: 0
+  max_n_beams: 32
+  max_beam_len: 4
+  max_branch_width: 16
+  max_budget: 32
+  initial_draft:
+    mode: local_streak
+    structure: tree
+    local:
+      controller: score
+      initial_depth: 4
+      min_depth: 2
+      max_depth: 4
+      increase_streak: 2
+      decrease_streak: 2
+      high_score: 2.0
+      low_penalty: 1.2
+      increase_score_threshold: 3.0
+      decrease_score_threshold: 2.4
+      protect_window: 5
+      protect_avg_accepted_depth: 2.0
+      neutral_score_decay: 0.75
+  proactive:
+    type: excluded
+    mode: adaptive
+    path_policy: hybrid_sequence_multi_position
+    max_n_beams: 32
+    max_beam_len: 6
+    max_branch_width: 16
+    max_budget: 32
+    multi:
+      max_deepest_leaves: 3
+      min_bonus_per_leaf: 1
+      max_bonus_per_leaf: 1
+      max_roots: 3
+      min_root_probability: 0.0
+      leaf_temperature: 1.0
+      full_depth_prior: 0.5
+      acceptance_ewma_alpha: 0.1
+      depth_probability_coverage: [1.0, 0.9, 0.6, 0.45, 0.35, 0.3]
+      root_depth_mode: probability
+      root_depth_floor: 1
+      root_depth_gamma: 0.65
+      root_depth_secondary_cap: 3
+      dynamic_roots:
+        enabled: true
+        mode: online_marginal
+        high_threshold: 0.70
+        mid_threshold: 0.25
+        high_roots: 1
+        mid_roots: 1
+        low_roots: 3
+        marginal_min_gain: 0.32
+        high_latency_marginal_min_gain: 0.32
+        marginal_cost_weight: 0.45
+        marginal_confidence_penalty: 0.30
+        online_alpha: 0.20
+        online_warmup_cycles: 16
+        online_exploration_interval: 64
+        online_min_reward: 0.55
+        response_aware_min_reward_ms: 240.0
+        high_latency_online_min_reward: 0.55
+    sequence:
+      quota_mode: all
+      max_bonus_per_depth: 1
+      max_roots: 3
+      multipos_min_path_depth: 3
+      multipos_min_response_ms: 240.0
+      anchor_deepest_roots: false
+      min_root_probability: 0.0
+      min_bonus_probability: 0.0
+      min_stop_depth: 1
+      selection_score: joint
+      reuse_depth_bonus: 0.0
+      stop_ewma_alpha: 0.20
+      acceptance_survival: [1.0, 0.55, 0.35, 0.22, 0.14, 0.08, 0.05]
+      depth_probability_coverage: [1.0, 1.0, 0.8, 0.6, 0.5, 0.5]
+    adaptive:
+      ewma_alpha: 0.2
+      min_alignment_rate: 0.0
+      warmup_cycles: 8
+      exploration_interval: 4
+      safety_margin_ms: 0.0
+      uncertainty_scale: 0.0
+      layer_deadline_mode: response_only
+  max_new_tokens: 64
+  max_request_num: -1
+
+node:
+  jetson:
+    - device: cuda:0

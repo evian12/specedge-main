@@ -1,0 +1,72 @@
+version: 1
+opt: 2
+
+base:
+  result_path: "result/4090_jetson"
+  exp_name: "multitenant_specedge"
+  dtype: fp16
+  seed: 42
+  ssh_key: ~/.ssh/id_ed25519
+  max_len: 2048
+
+server:
+  process_name: server
+  target_model: /home/yypan/models/Llama-2-7b-chat-hf
+  device: cuda:0
+  temperature: 0.7
+  max_batch_size: 4
+  num_clients: 1
+  batch_type: dynamic
+  cache_prefill: true
+  simulated_latency_ms: 0.0
+  simulated_decode_latency_ms: 0.0
+  scheduler_tick_ms: 5.0
+  validate_timeout_s: 600.0
+  background:
+    load: medium
+    arrival_rate: 0.5
+    max_active_requests: 4
+    prompt_min_tokens: 32
+    prompt_max_tokens: 128
+    generation_min_tokens: 16
+    generation_max_tokens: 48
+    queue_poll_ms: 5.0
+    start_delay_s: 0.0
+    start_on_first_foreground: false
+
+client:
+  host: 127.0.0.1:18001
+  process_name: client
+  draft_model: /home/yypan/models/TinyLlama-1.1B
+  dataset: specbench
+  reasoning: false
+  sample_req_cnt: 8
+  req_offset: 0
+  max_n_beams: 32
+  max_beam_len: 4
+  max_branch_width: 16
+  max_budget: 32
+  decoding:
+    mode: specedge
+    adaptive_mode: false
+    switch_threshold_ms: 60
+    decision_window: 16
+    estimator_alpha: 0.2
+    initial_mode: specedge
+  initial_draft:
+    mode: fixed
+    structure: tree
+  proactive:
+    type: excluded
+    mode: baseline
+    path_policy: single_best
+    max_n_beams: 32
+    max_beam_len: 3
+    max_branch_width: 16
+    max_budget: 32
+  max_new_tokens: 64
+  max_request_num: -1
+
+node:
+  jetson:
+    - device: cuda:0

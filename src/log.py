@@ -3,10 +3,17 @@ import json
 import logging
 import logging.config
 import logging.handlers
+import os
 import sys
+import threading
 import weakref
 from pathlib import Path
 from typing import ClassVar, Optional
+
+try:
+    import fcntl
+except Exception:  # pragma: no cover - non-Unix fallback
+    fcntl = None  # type: ignore
 
 # `Self` was added to `typing` in newer Python versions. Try importing
 # from `typing` first, fall back to `typing_extensions`, and finally
@@ -172,10 +179,11 @@ class ResultHandler(logging.Handler):
     def __init__(self, file_path: Path):
         super().__init__()
         self.file_path = file_path
+        self._lock = threading.Lock()
 
         # Create the file if it doesn't exist
         open(self.file_path, "w").close()
-        self.file = open(self.file_path, "a")
+        self._fd = os.open(self.file_path, os.O_APPEND | os.O_CREAT | os.O_WRONLY)
 
     def emit(self, record):
         asctime = _formatTime(record)
@@ -187,18 +195,26 @@ class ResultHandler(logging.Handler):
             log_entry.update(getattr(record, RESULT_DATA_PREFIX))
 
         try:
-            json.dump(log_entry, self.file)
-            self.file.write("\n")
+            line = (json.dumps(log_entry, separators=(",", ":")) + "\n").encode()
+            with self._lock:
+                if fcntl is not None:
+                    fcntl.flock(self._fd, fcntl.LOCK_EX)
+                try:
+                    os.write(self._fd, line)
+                finally:
+                    if fcntl is not None:
+                        fcntl.flock(self._fd, fcntl.LOCK_UN)
         except Exception:
             self.handleError(record)
 
     def __del__(self):
-        self.file.close()
+        self.close()
 
     def close(self):
         try:
-            if hasattr(self, "file") and not self.file.closed:
-                self.file.close()
+            if hasattr(self, "_fd") and self._fd is not None:
+                os.close(self._fd)
+                self._fd = None
         finally:
             super().close()
 

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from math import floor
+from math import ceil, floor
 
 import torch
 
@@ -102,6 +102,8 @@ def select_sequence_bonus_candidates(
     max_roots: int,
     min_root_probability: float,
     min_bonus_probability: float = 0.0,
+    min_stop_depth: int = 0,
+    excluded_token_ids: torch.Tensor | None = None,
     selection_score: str = "joint",
     reuse_depth_bonus: float = 0.0,
 ) -> list[ProactiveRootCandidate]:
@@ -115,29 +117,55 @@ def select_sequence_bonus_candidates(
         )
     if bonus_token_ids.size(0) != depth_count:
         raise ValueError("bonus token rows must match the sequence path")
+    if (
+        excluded_token_ids is not None
+        and excluded_token_ids.numel() != depth_count
+    ):
+        raise ValueError("excluded token rows must match the sequence path")
     if min_bonus_probability < 0.0:
         raise ValueError("min_bonus_probability must be non-negative")
+    if min_stop_depth < 0:
+        raise ValueError("min_stop_depth must be non-negative")
     if reuse_depth_bonus < 0.0:
         raise ValueError("reuse_depth_bonus must be non-negative")
-    if selection_score not in ["joint", "expected_reuse"]:
-        raise ValueError("selection_score must be 'joint' or 'expected_reuse'")
+    if selection_score not in [
+        "joint",
+        "expected_reuse",
+        "balanced_reuse",
+        "confidence_stop",
+    ]:
+        raise ValueError(
+            "selection_score must be 'joint', 'expected_reuse', "
+            "'balanced_reuse', or 'confidence_stop'"
+        )
 
     available_bonus = min(
         max_bonus_per_depth,
         bonus_token_ids.size(1),
         bonus_logprobs.size(1),
     )
-    counts = allocate_sequence_bonus_counts(
-        stop_probabilities,
-        max_roots=max_roots,
-        max_bonus_per_depth=available_bonus,
-    )
+    if selection_score in ["balanced_reuse", "confidence_stop"]:
+        counts = [available_bonus] * depth_count
+    else:
+        counts = allocate_sequence_bonus_counts(
+            stop_probabilities,
+            max_roots=max_roots,
+            max_bonus_per_depth=available_bonus,
+        )
 
     candidates: list[ProactiveRootCandidate] = []
     scored_candidates: list[tuple[float, ProactiveRootCandidate]] = []
     for depth, count in enumerate(counts):
+        if depth < min_stop_depth:
+            continue
         stop_probability = stop_probabilities[depth]
         for bonus_rank in range(count):
+            token_id = int(bonus_token_ids[depth, bonus_rank].item())
+            if (
+                excluded_token_ids is not None
+                and token_id == int(excluded_token_ids[depth].item())
+            ):
+                continue
             bonus_probability = float(
                 bonus_logprobs[depth, bonus_rank].exp().item()
             )
@@ -148,9 +176,7 @@ def select_sequence_bonus_candidates(
                 continue
             candidate = ProactiveRootCandidate(
                 leaf_idx=int(path_node_indices[depth].item()),
-                token_id=int(
-                    bonus_token_ids[depth, bonus_rank].item()
-                ),
+                token_id=token_id,
                 leaf_probability=stop_probability,
                 bonus_probability=bonus_probability,
                 joint_probability=joint_probability,
@@ -160,6 +186,13 @@ def select_sequence_bonus_candidates(
                 reusable_tail = max(0, depth_count - depth - 1)
                 score = joint_probability * (
                     1.0 + reuse_depth_bonus * reusable_tail
+                )
+            elif selection_score == "balanced_reuse":
+                accepted_prefix = max(0, depth)
+                reusable_tail = max(0, depth_count - depth - 1)
+                balanced_depth = min(accepted_prefix, reusable_tail)
+                score = joint_probability * (
+                    1.0 + reuse_depth_bonus * balanced_depth
                 )
             else:
                 score = joint_probability
@@ -322,3 +355,48 @@ def select_ids_by_probability(
         if cumulative_probability >= coverage * total_probability:
             break
     return selected
+
+
+def allocate_root_depth_limits(
+    probabilities: list[tuple[int, float]],
+    *,
+    planned_depth: int,
+    floor_depth: int,
+    gamma: float,
+    secondary_cap: int = 0,
+) -> dict[int, int]:
+    """Allocate longer proactive sequences to more likely roots."""
+    if planned_depth < 0:
+        raise ValueError("planned_depth must be non-negative")
+    if floor_depth <= 0:
+        raise ValueError("floor_depth must be positive")
+    if gamma < 0.0:
+        raise ValueError("gamma must be non-negative")
+    if secondary_cap < 0:
+        raise ValueError("secondary_cap must be non-negative")
+    if planned_depth == 0:
+        return {root_id: 0 for root_id, _probability in probabilities}
+    if not probabilities:
+        return {}
+
+    top_probability = max(max(probability, 0.0) for _, probability in probabilities)
+    if top_probability <= 0.0:
+        return {root_id: planned_depth for root_id, _ in probabilities}
+    top_root_id = max(
+        probabilities,
+        key=lambda item: max(item[1], 0.0),
+    )[0]
+
+    minimum_depth = min(planned_depth, floor_depth)
+    limits: dict[int, int] = {}
+    for root_id, probability in probabilities:
+        relative = max(probability, 0.0) / top_probability
+        scaled = relative**gamma if gamma > 0.0 else 1.0
+        depth = ceil(planned_depth * scaled)
+        if secondary_cap > 0 and root_id != top_root_id:
+            depth = min(depth, secondary_cap)
+        limits[root_id] = min(
+            planned_depth,
+            max(minimum_depth, depth),
+        )
+    return limits
