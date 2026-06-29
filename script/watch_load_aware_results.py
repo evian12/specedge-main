@@ -42,6 +42,45 @@ def _float(value: str, default: float = 0.0) -> float:
         return default
 
 
+def _value(row: dict[str, str] | None, *keys: str, default: str = "0") -> str:
+    if not row:
+        return default
+    for key in keys:
+        if key in row and row[key] not in {None, ""}:
+            return row[key]
+    return default
+
+
+def _tps(row: dict[str, str] | None) -> float:
+    return _float(_value(row, "fg tok/s", "tokens_per_second"))
+
+
+def _latency_per_token(row: dict[str, str] | None) -> float:
+    return _float(_value(row, "lat/tok", "average_latency_per_token"))
+
+
+def _server_ms(row: dict[str, str] | None) -> float:
+    return _float(_value(row, "server ms", "average_server_response_time"))
+
+
+def _queue_ms(row: dict[str, str] | None) -> float:
+    return _float(_value(row, "queue ms", "average_queue_wait_time"))
+
+
+def _spec_ratio_pct(row: dict[str, str] | None) -> float:
+    value = _float(_value(row, "spec %", "specedge_ratio"))
+    return value if value > 1.0 else value * 100.0
+
+
+def _ar_ratio_pct(row: dict[str, str] | None) -> float:
+    value = _float(_value(row, "ar %", "ar_ratio"))
+    return value if value > 1.0 else value * 100.0
+
+
+def _switches(row: dict[str, str] | None) -> int:
+    return int(_float(_value(row, "switch", "mode_switch_count")))
+
+
 def _parse_label(label: str) -> dict[str, object]:
     if label.startswith("loadaware_constant_"):
         rest = label.removeprefix("loadaware_constant_")
@@ -115,10 +154,10 @@ def _generate_report(summary_csv: Path, timeline_jsonl: Path, report_md: Path) -
             original = group.get("original")
             optimized = group.get("optimized")
             adaptive = group.get("adaptive")
-            ar_tps = _float(ar["fg tok/s"]) if ar else 0.0
-            original_tps = _float(original["fg tok/s"]) if original else 0.0
-            optimized_tps = _float(optimized["fg tok/s"]) if optimized else 0.0
-            adaptive_tps = _float(adaptive["fg tok/s"]) if adaptive else 0.0
+            ar_tps = _tps(ar)
+            original_tps = _tps(original)
+            optimized_tps = _tps(optimized)
+            adaptive_tps = _tps(adaptive)
             table_rows.append(
                 [
                     _fmt(load, 1),
@@ -128,11 +167,11 @@ def _generate_report(summary_csv: Path, timeline_jsonl: Path, report_md: Path) -
                     _fmt(adaptive_tps),
                     _fmt(adaptive_tps / ar_tps if ar_tps else 0.0, 3),
                     _fmt(adaptive_tps / original_tps if original_tps else 0.0, 3),
-                    _fmt(_float(adaptive["server ms"]) if adaptive else 0.0),
-                    _fmt(_float(adaptive["queue ms"]) if adaptive else 0.0),
-                    _fmt(_float(adaptive["spec %"]) if adaptive else 0.0),
-                    _fmt(_float(adaptive["ar %"]) if adaptive else 0.0),
-                    str(int(_float(adaptive["switch"]))) if adaptive else "-",
+                    _fmt(_server_ms(adaptive)),
+                    _fmt(_queue_ms(adaptive)),
+                    _fmt(_spec_ratio_pct(adaptive)),
+                    _fmt(_ar_ratio_pct(adaptive)),
+                    str(_switches(adaptive)) if adaptive else "-",
                 ]
             )
         lines.append(
@@ -165,13 +204,13 @@ def _generate_report(summary_csv: Path, timeline_jsonl: Path, report_md: Path) -
                 [
                     _fmt(row["load"], 1),
                     row["threshold"],
-                    _fmt(_float(row["fg tok/s"])),
-                    _fmt(_float(row["lat/tok"])),
-                    _fmt(_float(row["server ms"])),
-                    _fmt(_float(row["queue ms"])),
-                    _fmt(_float(row["spec %"])),
-                    _fmt(_float(row["ar %"])),
-                    str(int(_float(row["switch"]))),
+                    _fmt(_tps(row)),
+                    _fmt(_latency_per_token(row)),
+                    _fmt(_server_ms(row)),
+                    _fmt(_queue_ms(row)),
+                    _fmt(_spec_ratio_pct(row)),
+                    _fmt(_ar_ratio_pct(row)),
+                    str(_switches(row)),
                 ]
             )
         lines.append(
@@ -200,13 +239,13 @@ def _generate_report(summary_csv: Path, timeline_jsonl: Path, report_md: Path) -
             table_rows.append(
                 [
                     row["label"],
-                    _fmt(_float(row["fg tok/s"])),
-                    _fmt(_float(row["lat/tok"])),
-                    _fmt(_float(row["server ms"])),
-                    _fmt(_float(row["queue ms"])),
-                    _fmt(_float(row["spec %"])),
-                    _fmt(_float(row["ar %"])),
-                    str(int(_float(row["switch"]))),
+                    _fmt(_tps(row)),
+                    _fmt(_latency_per_token(row)),
+                    _fmt(_server_ms(row)),
+                    _fmt(_queue_ms(row)),
+                    _fmt(_spec_ratio_pct(row)),
+                    _fmt(_ar_ratio_pct(row)),
+                    str(_switches(row)),
                 ]
             )
         lines.append(
@@ -227,14 +266,14 @@ def _generate_report(summary_csv: Path, timeline_jsonl: Path, report_md: Path) -
         lines.append("")
 
     if rows:
-        best = max(rows, key=lambda row: _float(row["fg tok/s"]))
-        worst_latency = max(rows, key=lambda row: _float(row["lat/tok"]))
+        best = max(rows, key=_tps)
+        worst_latency = max(rows, key=_latency_per_token)
         lines.extend(
             [
                 "## Quick Read",
                 "",
-                f"- 最高前台吞吐: `{best['label']}`，`{_fmt(_float(best['fg tok/s']))} tok/s`。",
-                f"- 最高 token 延迟: `{worst_latency['label']}`，`{_fmt(_float(worst_latency['lat/tok']))} ms/token`。",
+                f"- 最高前台吞吐: `{best['label']}`，`{_fmt(_tps(best))} tok/s`。",
+                f"- 最高 token 延迟: `{worst_latency['label']}`，`{_fmt(_latency_per_token(worst_latency))} ms/token`。",
                 "- 解释时优先看 `server ms = queue ms + compute ms`；Adaptive 的 EMA 只应该跟随这个 server-side 指标，而不是 client cycle。",
                 "",
             ]
