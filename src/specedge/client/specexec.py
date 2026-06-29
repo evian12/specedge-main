@@ -67,11 +67,25 @@ class SpecExecClient:
         self._decision_window = config.decision_window
         self._estimator_alpha = config.estimator_alpha
         self._adaptive_initial_mode = config.adaptive_initial_mode
+        self._adaptive_controller = config.adaptive_controller
+        self._ar_ms_per_token_prior = config.ar_ms_per_token_prior
+        self._specedge_cycle_ms_prior = config.specedge_cycle_ms_prior
+        self._accepted_tokens_prior = config.accepted_tokens_prior
+        self._switch_margin = config.switch_margin
+        self._min_mode_duration_tokens = config.min_mode_duration_tokens
+        self._min_mode_duration_cycles = config.min_mode_duration_cycles
         self._estimated_server_time_ms: Optional[float] = None
+        self._queue_wait_ms_ema: Optional[float] = None
+        self._ar_ms_per_token_ema: Optional[float] = None
+        self._specedge_cycle_ms_ema: Optional[float] = None
+        self._accepted_tokens_ema: Optional[float] = None
         self._current_runtime_mode: Optional[str] = None
         self._mode_switch_count = 0
         self._ar_token_count = 0
         self._specedge_cycle_count = 0
+        self._tokens_since_last_switch = 0
+        self._cycles_since_last_switch = 0
+        self._last_mode_selection_reason = "init"
 
         self._verify_configs()
 
@@ -245,12 +259,28 @@ class SpecExecClient:
             raise ValueError("decode mode must be one of ar, specedge, adaptive")
         if config.adaptive_initial_mode not in ["ar", "specedge"]:
             raise ValueError("adaptive initial mode must be ar or specedge")
+        if config.adaptive_controller not in ["threshold", "performance"]:
+            raise ValueError(
+                "adaptive controller must be threshold or performance"
+            )
         if config.switch_threshold_ms <= 0.0:
             raise ValueError("switch_threshold_ms must be positive")
         if config.decision_window <= 0:
             raise ValueError("decision_window must be positive")
         if not 0.0 < config.estimator_alpha <= 1.0:
             raise ValueError("estimator_alpha must be in (0, 1]")
+        if config.ar_ms_per_token_prior <= 0.0:
+            raise ValueError("ar_ms_per_token_prior must be positive")
+        if config.specedge_cycle_ms_prior <= 0.0:
+            raise ValueError("specedge_cycle_ms_prior must be positive")
+        if config.accepted_tokens_prior <= 0.0:
+            raise ValueError("accepted_tokens_prior must be positive")
+        if not 0.0 <= config.switch_margin < 1.0:
+            raise ValueError("switch_margin must be in [0, 1)")
+        if config.min_mode_duration_tokens < 0:
+            raise ValueError("min_mode_duration_tokens must be non-negative")
+        if config.min_mode_duration_cycles < 0:
+            raise ValueError("min_mode_duration_cycles must be non-negative")
         if config.initial_draft_local_controller not in [
             "score",
             "state",
@@ -831,33 +861,163 @@ class SpecExecClient:
         result.policy_reason = policy_reason
         return result
 
-    def _observe_server_time(self, server_time_ms: Optional[float]) -> None:
-        if server_time_ms is None:
-            return
-        if self._estimated_server_time_ms is None:
-            self._estimated_server_time_ms = server_time_ms
-        else:
-            alpha = self._estimator_alpha
-            self._estimated_server_time_ms = (
-                (1.0 - alpha) * self._estimated_server_time_ms
-                + alpha * server_time_ms
+    def _ema(
+        self,
+        current: Optional[float],
+        value: Optional[float],
+    ) -> Optional[float]:
+        if value is None:
+            return current
+        value = float(value)
+        if current is None:
+            return value
+        alpha = self._estimator_alpha
+        return (1.0 - alpha) * current + alpha * value
+
+    def _observe_server_time(
+        self,
+        server_time_ms: Optional[float],
+        queue_wait_ms: Optional[float] = None,
+    ) -> None:
+        self._estimated_server_time_ms = self._ema(
+            self._estimated_server_time_ms,
+            server_time_ms,
+        )
+        self._queue_wait_ms_ema = self._ema(
+            self._queue_wait_ms_ema,
+            queue_wait_ms,
+        )
+
+    def _observe_ar_token_cost(self, ms_per_token: Optional[float]) -> None:
+        self._ar_ms_per_token_ema = self._ema(
+            self._ar_ms_per_token_ema,
+            ms_per_token,
+        )
+        self._tokens_since_last_switch += 1
+
+    def _observe_specedge_cycle(
+        self,
+        cycle_ms: float,
+        accepted_tokens: int,
+    ) -> None:
+        accepted = max(1, int(accepted_tokens))
+        self._specedge_cycle_ms_ema = self._ema(
+            self._specedge_cycle_ms_ema,
+            cycle_ms,
+        )
+        self._accepted_tokens_ema = self._ema(
+            self._accepted_tokens_ema,
+            float(accepted),
+        )
+        self._tokens_since_last_switch += accepted
+        self._cycles_since_last_switch += 1
+
+    def _pred_ar_ms_per_token(self) -> float:
+        return (
+            self._ar_ms_per_token_ema
+            if self._ar_ms_per_token_ema is not None
+            else self._ar_ms_per_token_prior
+        )
+
+    def _pred_specedge_ms_per_token(self) -> float:
+        cycle_ms = (
+            self._specedge_cycle_ms_ema
+            if self._specedge_cycle_ms_ema is not None
+            else self._specedge_cycle_ms_prior
+        )
+        accepted = (
+            self._accepted_tokens_ema
+            if self._accepted_tokens_ema is not None
+            else self._accepted_tokens_prior
+        )
+        return cycle_ms / max(1e-6, accepted)
+
+    def _cooldown_allows_switch(self, current_mode: str) -> bool:
+        if current_mode == "ar":
+            return (
+                self._tokens_since_last_switch
+                >= self._min_mode_duration_tokens
             )
+        return (
+            self._cycles_since_last_switch
+            >= self._min_mode_duration_cycles
+        )
 
     def _select_runtime_mode(self) -> str:
         if self._decode_mode in ["ar", "specedge"]:
+            self._last_mode_selection_reason = "fixed"
             return self._decode_mode
+        current = self._current_runtime_mode or self._adaptive_initial_mode
         if self._estimated_server_time_ms is None:
+            self._last_mode_selection_reason = "initial"
             return self._adaptive_initial_mode
-        return (
-            "specedge"
-            if self._estimated_server_time_ms >= self._switch_threshold_ms
-            else "ar"
-        )
+
+        if self._adaptive_controller == "threshold":
+            candidate = (
+                "specedge"
+                if self._estimated_server_time_ms >= self._switch_threshold_ms
+                else "ar"
+            )
+            reason = (
+                "threshold_specedge"
+                if candidate == "specedge"
+                else "threshold_ar"
+            )
+        else:
+            pred_ar = self._pred_ar_ms_per_token()
+            pred_specedge = self._pred_specedge_ms_per_token()
+            margin = self._switch_margin
+            if pred_ar < pred_specedge * (1.0 - margin):
+                candidate = "ar"
+                reason = "predict_ar"
+            elif pred_specedge < pred_ar * (1.0 - margin):
+                candidate = "specedge"
+                reason = "predict_specedge"
+            else:
+                candidate = current
+                reason = "hysteresis_hold"
+
+        if candidate != current and not self._cooldown_allows_switch(current):
+            self._last_mode_selection_reason = (
+                f"cooldown_hold_{current}_over_{candidate}"
+            )
+            return current
+
+        self._last_mode_selection_reason = reason
+        return candidate
 
     def _note_runtime_mode(self, mode: str) -> None:
         if self._current_runtime_mode is not None and self._current_runtime_mode != mode:
             self._mode_switch_count += 1
+            self._tokens_since_last_switch = 0
+            self._cycles_since_last_switch = 0
         self._current_runtime_mode = mode
+
+    def _adaptive_log_state(self, selected_mode: Optional[str] = None) -> dict:
+        pred_ar = self._pred_ar_ms_per_token()
+        pred_specedge = self._pred_specedge_ms_per_token()
+        return {
+            "controller": self._adaptive_controller,
+            "estimated_server_time_ms": self._estimated_server_time_ms,
+            "queue_wait_ms_ema": self._queue_wait_ms_ema,
+            "switch_threshold_ms": self._switch_threshold_ms,
+            "decision_window": self._decision_window,
+            "mode_switch_count": self._mode_switch_count,
+            "ar_token_count": self._ar_token_count,
+            "specedge_cycle_count": self._specedge_cycle_count,
+            "ar_ms_per_token_ema": self._ar_ms_per_token_ema,
+            "specedge_cycle_ms_ema": self._specedge_cycle_ms_ema,
+            "accepted_tokens_ema": self._accepted_tokens_ema,
+            "pred_ar_ms_per_token": pred_ar,
+            "pred_specedge_ms_per_token": pred_specedge,
+            "selected_mode": selected_mode or self._current_runtime_mode,
+            "switch_reason": self._last_mode_selection_reason,
+            "tokens_since_last_switch": self._tokens_since_last_switch,
+            "cycles_since_last_switch": self._cycles_since_last_switch,
+            "switch_margin": self._switch_margin,
+            "min_mode_duration_tokens": self._min_mode_duration_tokens,
+            "min_mode_duration_cycles": self._min_mode_duration_cycles,
+        }
 
     def _reset_tree_to_prefix(self) -> None:
         self._tree = Tree(
@@ -989,7 +1149,11 @@ class SpecExecClient:
             self._proactive_draft = False
             self._reused_proactive_depth = 0
 
-        self._observe_server_time(server_response_ms)
+        self._observe_server_time(
+            server_response_ms,
+            validation_response.queue_wait_ms,
+        )
+        self._observe_ar_token_cost(response_received_ms)
         self._ar_token_count += 1
         self._result_logger.log(
             {
@@ -997,12 +1161,7 @@ class SpecExecClient:
                 "req_idx": req_idx,
                 "step_idx": step_idx,
                 "mode": "ar",
-                "adaptive": {
-                    "estimated_server_time_ms": self._estimated_server_time_ms,
-                    "switch_threshold_ms": self._switch_threshold_ms,
-                    "decision_window": self._decision_window,
-                    "mode_switch_count": self._mode_switch_count,
-                },
+                "adaptive": self._adaptive_log_state("ar"),
                 "draft": {
                     "forward": [],
                     "end_to_end": 0.0,
@@ -1119,7 +1278,9 @@ class SpecExecClient:
                 self._proactive_draft = False
                 self._reused_proactive_depth = 0
 
-            self._observe_server_time(server_response_ms)
+            queue_wait_ms = float(response.get("queue_wait_ms", 0.0))
+            self._observe_server_time(server_response_ms, queue_wait_ms)
+            self._observe_ar_token_cost(response_received_ms)
             self._ar_token_count += 1
             self._result_logger.log(
                 {
@@ -1127,14 +1288,7 @@ class SpecExecClient:
                     "req_idx": req_idx,
                     "step_idx": step_idx + produced,
                     "mode": "ar",
-                    "adaptive": {
-                        "estimated_server_time_ms": (
-                            self._estimated_server_time_ms
-                        ),
-                        "switch_threshold_ms": self._switch_threshold_ms,
-                        "decision_window": self._decision_window,
-                        "mode_switch_count": self._mode_switch_count,
-                    },
+                    "adaptive": self._adaptive_log_state("ar"),
                     "draft": {
                         "forward": [],
                         "end_to_end": 0.0,
@@ -1169,9 +1323,7 @@ class SpecExecClient:
                             "elapsed_ms": 0.0,
                             "response_received_ms": response_received_ms,
                             "server_response_ms": server_response_ms,
-                            "queue_wait_ms": float(
-                                response.get("queue_wait_ms", 0.0)
-                            ),
+                            "queue_wait_ms": queue_wait_ms,
                             "server_compute_ms": float(
                                 response.get(
                                     "server_compute_ms",
@@ -1273,13 +1425,7 @@ class SpecExecClient:
                         "step_idx": step_idx,
                         "mode": "ar_to_specedge_prefill",
                         "draft_prefill_ms": draft_prefill_t.elapsed,
-                        "adaptive": {
-                            "estimated_server_time_ms": (
-                                self._estimated_server_time_ms
-                            ),
-                            "switch_threshold_ms": self._switch_threshold_ms,
-                            "mode_switch_count": self._mode_switch_count,
-                        },
+                        "adaptive": self._adaptive_log_state("specedge"),
                     }
                 )
 
@@ -1348,7 +1494,11 @@ class SpecExecClient:
         server_response_ms = target_stats["proactive_execution"].get(
             "server_response_ms"
         )
-        self._observe_server_time(server_response_ms)
+        proactive_execution = target_stats["proactive_execution"]
+        self._observe_server_time(
+            server_response_ms,
+            proactive_execution.get("queue_wait_ms"),
+        )
 
         if max_fresh_tokens is not None:
             fresh_token_ids = fresh_token_ids[:max_fresh_tokens]
@@ -1364,6 +1514,7 @@ class SpecExecClient:
                 accepted_draft_depth
             )
         cycle_ms = (time.perf_counter() - cycle_start) * 1000
+        self._observe_specedge_cycle(cycle_ms, fresh_token_ids.numel())
         initial_draft_log = {
             "mode": self._initial_draft_mode,
             "structure": self._initial_draft_structure,
@@ -1399,7 +1550,6 @@ class SpecExecClient:
             self._initial_draft_policy is not None
             and initial_draft_decision is not None
         ):
-            proactive_execution = target_stats["proactive_execution"]
             reward = self._initial_draft_policy.observe(
                 decision=initial_draft_decision,
                 accepted_tokens=fresh_token_ids.numel(),
@@ -1430,14 +1580,7 @@ class SpecExecClient:
                 "req_idx": req_idx,
                 "step_idx": step_idx,
                 "mode": "specedge",
-                "adaptive": {
-                    "estimated_server_time_ms": self._estimated_server_time_ms,
-                    "switch_threshold_ms": self._switch_threshold_ms,
-                    "decision_window": self._decision_window,
-                    "mode_switch_count": self._mode_switch_count,
-                    "ar_token_count": self._ar_token_count,
-                    "specedge_cycle_count": self._specedge_cycle_count,
-                },
+                "adaptive": self._adaptive_log_state("specedge"),
                 "draft": {
                     "forward": draft_stats["forward_t"],
                     "end_to_end": draft_t.elapsed,

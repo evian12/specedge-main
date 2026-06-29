@@ -158,6 +158,13 @@ def main(config_file: str):
         config.get("estimator_alpha", 0.2),
     )
     adaptive_initial_mode = decoding.get("initial_mode", "specedge")
+    adaptive_controller = decoding.get("controller", "threshold")
+    ar_ms_per_token_prior = decoding.get("ar_ms_per_token_prior", 45.0)
+    specedge_cycle_ms_prior = decoding.get("specedge_cycle_ms_prior", 90.0)
+    accepted_tokens_prior = decoding.get("accepted_tokens_prior", 3.2)
+    switch_margin = decoding.get("switch_margin", 0.05)
+    min_mode_duration_tokens = decoding.get("min_mode_duration_tokens", 32)
+    min_mode_duration_cycles = decoding.get("min_mode_duration_cycles", 2)
 
     logger.debug("draft_model: %s", draft_model)
     logger.debug("target_model: %s", target_model)
@@ -669,6 +676,13 @@ def main(config_file: str):
                 "SPECEDGE_DECISION_WINDOW": decision_window,
                 "SPECEDGE_ESTIMATOR_ALPHA": estimator_alpha,
                 "SPECEDGE_ADAPTIVE_INITIAL_MODE": adaptive_initial_mode,
+                "SPECEDGE_ADAPTIVE_CONTROLLER": adaptive_controller,
+                "SPECEDGE_AR_MS_PER_TOKEN_PRIOR": ar_ms_per_token_prior,
+                "SPECEDGE_SPECEDGE_CYCLE_MS_PRIOR": specedge_cycle_ms_prior,
+                "SPECEDGE_ACCEPTED_TOKENS_PRIOR": accepted_tokens_prior,
+                "SPECEDGE_SWITCH_MARGIN": switch_margin,
+                "SPECEDGE_MIN_MODE_DURATION_TOKENS": min_mode_duration_tokens,
+                "SPECEDGE_MIN_MODE_DURATION_CYCLES": min_mode_duration_cycles,
                 "SPECEDGE_HOST": host,
                 "SPECEDGE_CLIENT_IDX": client_idx,
                 "SPECEDGE_REASONING": reasoning,

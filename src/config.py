@@ -669,6 +669,28 @@ class SpecEdgeClientConfig(metaclass=_ConfigMeta):
             "SPECEDGE_ADAPTIVE_INITIAL_MODE",
             "specedge",
         )
+        cls.adaptive_controller = cls._from_env_default(
+            "SPECEDGE_ADAPTIVE_CONTROLLER",
+            "threshold",
+        )
+        cls.ar_ms_per_token_prior = float(
+            cls._from_env_default("SPECEDGE_AR_MS_PER_TOKEN_PRIOR", "45.0")
+        )
+        cls.specedge_cycle_ms_prior = float(
+            cls._from_env_default("SPECEDGE_SPECEDGE_CYCLE_MS_PRIOR", "90.0")
+        )
+        cls.accepted_tokens_prior = float(
+            cls._from_env_default("SPECEDGE_ACCEPTED_TOKENS_PRIOR", "3.2")
+        )
+        cls.switch_margin = float(
+            cls._from_env_default("SPECEDGE_SWITCH_MARGIN", "0.05")
+        )
+        cls.min_mode_duration_tokens = int(
+            cls._from_env_default("SPECEDGE_MIN_MODE_DURATION_TOKENS", "32")
+        )
+        cls.min_mode_duration_cycles = int(
+            cls._from_env_default("SPECEDGE_MIN_MODE_DURATION_CYCLES", "2")
+        )
 
         # server configuration
         cls.host = cls._from_env("SPECEDGE_HOST")

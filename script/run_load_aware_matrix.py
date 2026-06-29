@@ -15,7 +15,8 @@ TEMPLATES = {
     "ar": ROOT / "config/specedge_4090_jetson_multitenant_streaming_ar.yaml",
     "original": ROOT / "config/specedge_4090_jetson_multitenant_specedge.yaml",
     "optimized": ROOT / "config/specedge_4090_jetson_multitenant_response_only.yaml",
-    "adaptive": ROOT / "config/specedge_4090_jetson_multitenant_adaptive.yaml",
+    "adaptive_threshold": ROOT / "config/specedge_4090_jetson_multitenant_adaptive.yaml",
+    "adaptive_predictor": ROOT / "config/specedge_4090_jetson_multitenant_adaptive.yaml",
 }
 
 
@@ -49,13 +50,33 @@ def _set_background(config: dict, *, profile: str, rate: float, load_label: str)
     config["server"]["simulated_decode_latency_ms"] = 0.0
 
 
-def make_constant(loads: list[float]) -> list[Path]:
+def _apply_scheme(config: dict, scheme: str) -> None:
+    decoding = config.setdefault("client", {}).setdefault("decoding", {})
+    if scheme == "adaptive_threshold":
+        decoding["controller"] = "threshold"
+        decoding.setdefault("initial_mode", "specedge")
+        decoding.setdefault("decision_window", 16)
+    elif scheme == "adaptive_predictor":
+        decoding["controller"] = "performance"
+        decoding["initial_mode"] = "ar"
+        decoding["decision_window"] = max(int(decoding.get("decision_window", 64)), 64)
+        decoding.setdefault("ar_ms_per_token_prior", 45.0)
+        decoding.setdefault("specedge_cycle_ms_prior", 90.0)
+        decoding.setdefault("accepted_tokens_prior", 3.2)
+        decoding.setdefault("switch_margin", 0.05)
+        decoding.setdefault("min_mode_duration_tokens", 32)
+        decoding.setdefault("min_mode_duration_cycles", 2)
+
+
+def make_constant(loads: list[float], schemes: list[str]) -> list[Path]:
     configs: list[Path] = []
     for rate in loads:
-        for scheme, template in TEMPLATES.items():
+        for scheme in schemes:
+            template = TEMPLATES[scheme]
             cfg = _load_yaml(template)
             label = f"constant_{_rate_label(rate)}_{scheme}"
             cfg["base"]["exp_name"] = f"loadaware_{label}"
+            _apply_scheme(cfg, scheme)
             _set_background(
                 cfg,
                 profile="constant",
@@ -70,12 +91,13 @@ def make_constant(loads: list[float]) -> list[Path]:
 
 def make_threshold(rates: list[float], thresholds: list[float]) -> list[Path]:
     configs: list[Path] = []
-    template = TEMPLATES["adaptive"]
+    template = TEMPLATES["adaptive_threshold"]
     for rate in rates:
         for threshold in thresholds:
             cfg = _load_yaml(template)
             label = f"threshold_r{_rate_label(rate)}_t{int(threshold)}"
             cfg["base"]["exp_name"] = f"loadaware_{label}"
+            _apply_scheme(cfg, "adaptive_threshold")
             cfg["client"]["decoding"]["switch_threshold_ms"] = threshold
             _set_background(cfg, profile="constant", rate=rate, load_label=str(rate))
             path = GENERATED / "threshold" / f"{label}.yaml"
@@ -84,36 +106,54 @@ def make_threshold(rates: list[float], thresholds: list[float]) -> list[Path]:
     return configs
 
 
-def make_step() -> list[Path]:
-    cfg = _load_yaml(TEMPLATES["adaptive"])
-    cfg["base"]["exp_name"] = "loadaware_step_adaptive"
-    _set_background(cfg, profile="step", rate=0.2, load_label="step")
-    cfg["server"]["background"]["step_schedule"] = [
-        {"duration_s": 30, "arrival_rate": 0.2},
-        {"duration_s": 30, "arrival_rate": 2.0},
-        {"duration_s": 30, "arrival_rate": 0.2},
-        {"duration_s": 30, "arrival_rate": 3.0},
-        {"duration_s": 30, "arrival_rate": 0.0},
-    ]
-    path = GENERATED / "step" / "adaptive.yaml"
-    _write_yaml(path, cfg)
-    return [path]
+def _strong_background(config: dict, *, min_tokens: int, max_tokens: int) -> None:
+    background = config["server"].setdefault("background", {})
+    background["generation_min_tokens"] = min_tokens
+    background["generation_max_tokens"] = max_tokens
 
 
-def make_bursty() -> list[Path]:
-    cfg = _load_yaml(TEMPLATES["adaptive"])
-    cfg["base"]["exp_name"] = "loadaware_bursty_adaptive"
-    _set_background(cfg, profile="bursty", rate=0.2, load_label="bursty")
-    cfg["server"]["background"]["bursty"] = {
-        "base_rate": 0.2,
-        "burst_rate": 2.0,
-        "trigger_rate": 0.10,
-        "min_duration_s": 8.0,
-        "max_duration_s": 20.0,
-    }
-    path = GENERATED / "bursty" / "adaptive.yaml"
-    _write_yaml(path, cfg)
-    return [path]
+def make_step(schemes: list[str]) -> list[Path]:
+    configs: list[Path] = []
+    for scheme in schemes:
+        cfg = _load_yaml(TEMPLATES[scheme])
+        cfg["base"]["exp_name"] = f"loadaware_step_{scheme}"
+        _apply_scheme(cfg, scheme)
+        _set_background(cfg, profile="step", rate=0.0, load_label="step")
+        _strong_background(cfg, min_tokens=128, max_tokens=256)
+        cfg["server"]["background"]["step_schedule"] = [
+            {"duration_s": 60, "arrival_rate": 0.0},
+            {"duration_s": 60, "arrival_rate": 14.0},
+            {"duration_s": 60, "arrival_rate": 0.0},
+            {"duration_s": 60, "arrival_rate": 14.0},
+            {"duration_s": 60, "arrival_rate": 0.0},
+        ]
+        path = GENERATED / "step" / f"{scheme}.yaml"
+        _write_yaml(path, cfg)
+        configs.append(path)
+    return configs
+
+
+def make_bursty(schemes: list[str]) -> list[Path]:
+    configs: list[Path] = []
+    for scheme in schemes:
+        cfg = _load_yaml(TEMPLATES[scheme])
+        cfg["base"]["exp_name"] = f"loadaware_bursty_{scheme}"
+        _apply_scheme(cfg, scheme)
+        _set_background(cfg, profile="step", rate=0.0, load_label="bursty")
+        _strong_background(cfg, min_tokens=128, max_tokens=256)
+        cfg["server"]["background"]["step_schedule"] = [
+            {"duration_s": 60, "arrival_rate": 0.0},
+            {"duration_s": 30, "arrival_rate": 14.0},
+            {"duration_s": 60, "arrival_rate": 0.0},
+            {"duration_s": 30, "arrival_rate": 14.0},
+            {"duration_s": 60, "arrival_rate": 0.0},
+            {"duration_s": 30, "arrival_rate": 14.0},
+            {"duration_s": 60, "arrival_rate": 0.0},
+        ]
+        path = GENERATED / "bursty" / f"{scheme}.yaml"
+        _write_yaml(path, cfg)
+        configs.append(path)
+    return configs
 
 
 def exp_name(config: Path) -> str:
@@ -190,7 +230,11 @@ def main() -> None:
         choices=["constant", "threshold", "step", "bursty", "all"],
         default="constant",
     )
-    parser.add_argument("--loads", default="0,0.2,0.5,1.0,2.0,4.0")
+    parser.add_argument("--loads", default="0,0.5,1.0,2.0,4.0,6.0,8.0,10.0,12.0,14.0")
+    parser.add_argument(
+        "--schemes",
+        default="ar,original,optimized,adaptive_threshold,adaptive_predictor",
+    )
     parser.add_argument("--threshold-rates", default="0.5,1.0,2.0")
     parser.add_argument("--thresholds", default="40,60,80,100,150,200")
     parser.add_argument("--warmup-seconds", type=int, default=180)
@@ -198,10 +242,19 @@ def main() -> None:
     parser.add_argument("--ssh-key", default=str(Path.home() / ".ssh/id_ed25519"))
     parser.add_argument("--run", action="store_true")
     args = parser.parse_args()
+    schemes = [value.strip() for value in args.schemes.split(",") if value.strip()]
+    unknown = sorted(set(schemes) - set(TEMPLATES))
+    if unknown:
+        raise ValueError(f"Unknown scheme(s): {unknown}")
 
     configs: list[Path] = []
     if args.experiment in {"constant", "all"}:
-        configs.extend(make_constant([float(value) for value in args.loads.split(",")]))
+        configs.extend(
+            make_constant(
+                [float(value) for value in args.loads.split(",")],
+                schemes,
+            )
+        )
     if args.experiment in {"threshold", "all"}:
         configs.extend(
             make_threshold(
@@ -210,9 +263,9 @@ def main() -> None:
             )
         )
     if args.experiment in {"step", "all"}:
-        configs.extend(make_step())
+        configs.extend(make_step(schemes))
     if args.experiment in {"bursty", "all"}:
-        configs.extend(make_bursty())
+        configs.extend(make_bursty(schemes))
 
     for config in configs:
         print(config)
@@ -234,6 +287,10 @@ def main() -> None:
                 "results/load_aware_summary.csv",
                 "--timeline",
                 "results/load_aware_timeline.jsonl",
+                "--window-summary",
+                "results/load_aware_window_summary.csv",
+                "--window-size-s",
+                "10",
             ],
             cwd=ROOT,
             check=True,

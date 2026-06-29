@@ -84,7 +84,7 @@ def _switches(row: dict[str, str] | None) -> int:
 def _parse_label(label: str) -> dict[str, object]:
     if label.startswith("loadaware_constant_"):
         rest = label.removeprefix("loadaware_constant_")
-        load, scheme = rest.rsplit("_", 1)
+        load, scheme = _split_load_scheme(rest)
         return {
             "experiment": "constant",
             "load": float(load.replace("p", ".")),
@@ -99,11 +99,33 @@ def _parse_label(label: str) -> dict[str, object]:
             "threshold": int(threshold_part.removeprefix("t")),
             "scheme": "adaptive",
         }
-    if label == "loadaware_step_adaptive":
-        return {"experiment": "step", "scheme": "adaptive"}
-    if label == "loadaware_bursty_adaptive":
-        return {"experiment": "bursty", "scheme": "adaptive"}
+    if label.startswith("loadaware_step_"):
+        return {
+            "experiment": "step",
+            "scheme": label.removeprefix("loadaware_step_"),
+        }
+    if label.startswith("loadaware_bursty_"):
+        return {
+            "experiment": "bursty",
+            "scheme": label.removeprefix("loadaware_bursty_"),
+        }
     return {"experiment": "unknown", "scheme": label}
+
+
+def _split_load_scheme(rest: str) -> tuple[str, str]:
+    known_schemes = [
+        "adaptive_predictor",
+        "adaptive_threshold",
+        "optimized",
+        "original",
+        "adaptive",
+        "ar",
+    ]
+    for scheme in known_schemes:
+        suffix = f"_{scheme}"
+        if rest.endswith(suffix):
+            return rest[: -len(suffix)], scheme
+    return rest.rsplit("_", 1)
 
 
 def _fmt(value: object, digits: int = 2) -> str:
@@ -153,25 +175,29 @@ def _generate_report(summary_csv: Path, timeline_jsonl: Path, report_md: Path) -
             ar = group.get("ar")
             original = group.get("original")
             optimized = group.get("optimized")
-            adaptive = group.get("adaptive")
+            adaptive_threshold = group.get("adaptive_threshold") or group.get("adaptive")
+            adaptive_predictor = group.get("adaptive_predictor")
             ar_tps = _tps(ar)
             original_tps = _tps(original)
             optimized_tps = _tps(optimized)
-            adaptive_tps = _tps(adaptive)
+            threshold_tps = _tps(adaptive_threshold)
+            predictor_tps = _tps(adaptive_predictor)
+            oracle = max(ar_tps, optimized_tps)
             table_rows.append(
                 [
                     _fmt(load, 1),
                     _fmt(ar_tps),
                     _fmt(original_tps),
                     _fmt(optimized_tps),
-                    _fmt(adaptive_tps),
-                    _fmt(adaptive_tps / ar_tps if ar_tps else 0.0, 3),
-                    _fmt(adaptive_tps / original_tps if original_tps else 0.0, 3),
-                    _fmt(_server_ms(adaptive)),
-                    _fmt(_queue_ms(adaptive)),
-                    _fmt(_spec_ratio_pct(adaptive)),
-                    _fmt(_ar_ratio_pct(adaptive)),
-                    str(_switches(adaptive)) if adaptive else "-",
+                    _fmt(threshold_tps),
+                    _fmt(predictor_tps),
+                    _fmt(oracle),
+                    _fmt((oracle - predictor_tps) / oracle if oracle else 0.0, 3),
+                    _fmt(_server_ms(adaptive_predictor)),
+                    _fmt(_queue_ms(adaptive_predictor)),
+                    _fmt(_spec_ratio_pct(adaptive_predictor)),
+                    _fmt(_ar_ratio_pct(adaptive_predictor)),
+                    str(_switches(adaptive_predictor)) if adaptive_predictor else "-",
                 ]
             )
         lines.append(
@@ -181,13 +207,14 @@ def _generate_report(summary_csv: Path, timeline_jsonl: Path, report_md: Path) -
                     "AR tok/s",
                     "Original tok/s",
                     "Optimized tok/s",
-                    "Adaptive tok/s",
-                    "Adaptive/AR",
-                    "Adaptive/Original",
-                    "Adaptive server ms",
-                    "Adaptive queue ms",
-                    "Adaptive SpecEdge %",
-                    "Adaptive AR %",
+                    "Threshold tok/s",
+                    "Predictor tok/s",
+                    "Oracle tok/s",
+                    "Predictor rel gap",
+                    "Predictor server ms",
+                    "Predictor queue ms",
+                    "Predictor SpecEdge %",
+                    "Predictor AR %",
                     "switches",
                 ],
                 table_rows,

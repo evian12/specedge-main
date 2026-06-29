@@ -49,10 +49,17 @@ client:
   decoding:
     mode: adaptive
     adaptive_mode: true
+    controller: performance
     switch_threshold_ms: 60
-    decision_window: 16
+    decision_window: 64
     estimator_alpha: 0.2
-    initial_mode: specedge
+    initial_mode: ar
+    ar_ms_per_token_prior: 45.0
+    specedge_cycle_ms_prior: 90.0
+    accepted_tokens_prior: 3.2
+    switch_margin: 0.05
+    min_mode_duration_tokens: 32
+    min_mode_duration_cycles: 2
   initial_draft:
     mode: local_streak
     structure: tree
